@@ -1,0 +1,38 @@
+# dependencies
+node_modules/
+
+# build
+dist/
+coverage/
+
+# logs
+*.log
+logs/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# runtime
+.local-run/
+*.pid
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# temp
+tmp/
+temp/
+
+# python runner
+python-runner/.venv/
+python-runner/__pycache__/
+python-runner/**/*.pyc
+
+# test output
+.nyc_output/

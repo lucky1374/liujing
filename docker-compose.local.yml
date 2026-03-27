@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ai-test-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: ai_test_platform
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - ai_test_mysql_data:/var/lib/mysql
+    networks:
+      - ai-test-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-test-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ai_test_redis_data:/data
+    networks:
+      - ai-test-network
+
+  backend:
+    build:
+      context: ./ai-test-platform
+      dockerfile: Dockerfile
+    container_name: ai-test-backend
+    command: npm run start:dev
+    environment:
+      PORT: 3000
+      NODE_ENV: development
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USERNAME: root
+      DB_PASSWORD: root123
+      DB_DATABASE: ai_test_platform
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      JWT_SECRET: your-secret-key-change-in-production
+      JWT_EXPIRES_IN: 7d
+      AI_PROVIDER: qianwen
+      AI_API_KEY: your-api-key
+      AI_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+      AI_MODEL: qwen-turbo
+      FRONTEND_URL: http://localhost:5173
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mysql
+      - redis
+    networks:
+      - ai-test-network
+
+  frontend:
+    build:
+      context: ./ai-test-platform-web
+      dockerfile: Dockerfile
+    container_name: ai-test-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    networks:
+      - ai-test-network
+
+volumes:
+  ai_test_mysql_data:
+  ai_test_redis_data:
+
+networks:
+  ai-test-network:
+    driver: bridge

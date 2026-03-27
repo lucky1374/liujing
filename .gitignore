@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# runtime
+.local-run/
+*.pid
+*.log
+
+# temp office files
+~$*.docx
+
+# python
+**/.venv/
+**/__pycache__/
+**/*.pyc
+
+# node
+**/node_modules/
+**/dist/
+**/coverage/
+
+# env
+**/.env
+**/.env.local
+**/.env.*.local
