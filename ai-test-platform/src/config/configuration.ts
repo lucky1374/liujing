@@ -31,5 +31,6 @@ export default () => ({
 
   runner: {
     pythonRunnerUrl: process.env.PYTHON_RUNNER_URL || 'http://localhost:8001',
+    authToken: process.env.RUNNER_AUTH_TOKEN || '',
   },
 });

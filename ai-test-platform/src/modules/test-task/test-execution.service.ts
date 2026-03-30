@@ -12,7 +12,7 @@ import { TestTask, TaskStatus } from './entities/test-task.entity';
 import { TestScript, ScriptExecutionMode } from '../test-script/entities/test-script.entity';
 import { Environment } from '../environment/entities/environment.entity';
 import { ExecutionErrorType, ExecutionRunnerSource, ExecutionStatus, TestExecution } from './entities/test-execution.entity';
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 
 export interface TestResult {
   scriptId: string;
@@ -280,11 +280,22 @@ export class TestExecutionService {
 
   private async executeByPythonRunnerHttp(runnerUrl: string, script: TestScript, task: TestTask, environment: Environment | null, startTime: number): Promise<TestResult> {
     const payload = this.buildPythonRunnerPayload(script, task, environment);
+    const runnerAuthToken = this.configService.get<string>('runner.authToken');
+    const executeUrl = `${runnerUrl.replace(/\/$/, '')}/execute`;
+
+    this.logger.log(
+      `尝试调用 Python HTTP Runner: taskId=${task.id}, scriptId=${script.id}, url=${executeUrl}, timeoutMs=35000`,
+    );
 
     try {
-      const { data } = await axios.post(`${runnerUrl.replace(/\/$/, '')}/execute`, payload, {
+      const { data } = await axios.post(executeUrl, payload, {
         timeout: 35000,
+        headers: runnerAuthToken
+          ? { 'X-Runner-Token': runnerAuthToken }
+          : undefined,
       });
+
+      this.logger.log(`Python HTTP Runner 调用成功: taskId=${task.id}, scriptId=${script.id}, url=${executeUrl}`);
 
       const result: TestResult = {
         scriptId: script.id,
@@ -316,8 +327,93 @@ export class TestExecutionService {
       await this.saveExecution(task, script, environment, result);
       return result;
     } catch (error) {
-      this.logger.warn(`HTTP runner 调用失败，回退到本地执行: ${error.message}`);
+      const axiosError = this.getAxiosError(error);
+      const status = axiosError?.response?.status;
+
+      if (status === 401 || status === 403) {
+        const result: TestResult = {
+          scriptId: script.id,
+          scriptName: script.name,
+          status: 'failed',
+          duration: Date.now() - startTime,
+          runnerSource: ExecutionRunnerSource.PYTHON_HTTP,
+          url: environment?.baseUrl,
+          method: 'PYTHON',
+          requestHeaders: environment?.headers || {},
+          error: `Python HTTP Runner 鉴权失败: HTTP ${status}`,
+          errorStack: this.formatRunnerHttpError(error, task.id, script.id, executeUrl),
+          response: {
+            status,
+            data: axiosError?.response?.data,
+          },
+        };
+
+        this.logger.error(
+          `Python HTTP Runner 鉴权失败，不执行本地回退: ${this.formatRunnerHttpError(error, task.id, script.id, executeUrl)}`,
+        );
+        await this.saveExecution(task, script, environment, result);
+        return result;
+      }
+
+      this.logger.warn(
+        `Python HTTP Runner 调用失败，回退到本地执行: ${this.formatRunnerHttpError(error, task.id, script.id, executeUrl)}`,
+      );
       return this.executeByPythonRunnerLocal(script, task, environment, startTime);
+    }
+  }
+
+  private getAxiosError(error: unknown): AxiosError | null {
+    if (error && typeof error === 'object' && 'isAxiosError' in error) {
+      return error as AxiosError;
+    }
+    return null;
+  }
+
+  private formatRunnerHttpError(error: unknown, taskId: string, scriptId: string, executeUrl: string): string {
+    const axiosError = this.getAxiosError(error);
+    if (axiosError) {
+      const status = axiosError.response?.status;
+      const statusText = axiosError.response?.statusText;
+      const errorCode = axiosError.code;
+      const timeout = axiosError.config?.timeout;
+      const method = axiosError.config?.method?.toUpperCase();
+      const responseData = axiosError.response?.data;
+      const responsePreview = this.toLogPreview(responseData);
+
+      return [
+        `taskId=${taskId}`,
+        `scriptId=${scriptId}`,
+        `url=${executeUrl}`,
+        method ? `method=${method}` : undefined,
+        timeout ? `timeoutMs=${timeout}` : undefined,
+        errorCode ? `code=${errorCode}` : undefined,
+        status ? `status=${status}` : undefined,
+        statusText ? `statusText=${statusText}` : undefined,
+        `message=${axiosError.message}`,
+        responsePreview ? `response=${responsePreview}` : undefined,
+      ]
+        .filter(Boolean)
+        .join(', ');
+    }
+
+    if (error instanceof Error) {
+      return `taskId=${taskId}, scriptId=${scriptId}, url=${executeUrl}, message=${error.message}`;
+    }
+
+    return `taskId=${taskId}, scriptId=${scriptId}, url=${executeUrl}, unknownError=${String(error)}`;
+  }
+
+  private toLogPreview(value: unknown): string | undefined {
+    if (value === undefined) return undefined;
+
+    if (typeof value === 'string') {
+      return value.slice(0, 500);
+    }
+
+    try {
+      return JSON.stringify(value).slice(0, 500);
+    } catch {
+      return String(value).slice(0, 500);
     }
   }
 
@@ -332,7 +428,7 @@ export class TestExecutionService {
 
       await fs.writeFile(payloadPath, JSON.stringify(payload, null, 2), 'utf-8');
 
-      const { stdout, stderr } = await this.execFileAsync(pythonBin, [runnerEntry, '--payload', payloadPath], {
+      const { stdout, stderr } = await this.execFileAsync(pythonBin, ['-m', 'runner.main', '--payload', payloadPath], {
         cwd: path.resolve(process.cwd(), 'python-runner'),
         timeout: 35000,
       });
@@ -422,6 +518,129 @@ export class TestExecutionService {
 
   async findExecutionById(id: string): Promise<TestExecution | null> {
     return this.executionRepository.findOne({ where: { id } });
+  }
+
+  async diagnosePythonRunner(): Promise<{
+    runnerUrl: string | null;
+    hasAuthTokenConfigured: boolean;
+    health: {
+      ok: boolean;
+      httpStatus?: number;
+      response?: unknown;
+      error?: string;
+    };
+    executeProbe?: {
+      ok: boolean;
+      httpStatus?: number;
+      response?: unknown;
+      error?: string;
+    };
+  }> {
+    const runnerUrl = this.configService.get<string>('runner.pythonRunnerUrl') || null;
+    const runnerAuthToken = this.configService.get<string>('runner.authToken') || '';
+
+    if (!runnerUrl) {
+      return {
+        runnerUrl: null,
+        hasAuthTokenConfigured: false,
+        health: {
+          ok: false,
+          error: 'PYTHON_RUNNER_URL 未配置',
+        },
+      };
+    }
+
+    const baseUrl = runnerUrl.replace(/\/$/, '');
+    const healthUrl = `${baseUrl}/health`;
+    const executeUrl = `${baseUrl}/execute`;
+
+    try {
+      const healthResponse = await axios.get(healthUrl, {
+        timeout: 5000,
+        validateStatus: () => true,
+      });
+
+      const result: {
+        runnerUrl: string;
+        hasAuthTokenConfigured: boolean;
+        health: {
+          ok: boolean;
+          httpStatus?: number;
+          response?: unknown;
+          error?: string;
+        };
+        executeProbe?: {
+          ok: boolean;
+          httpStatus?: number;
+          response?: unknown;
+          error?: string;
+        };
+      } = {
+        runnerUrl: baseUrl,
+        hasAuthTokenConfigured: Boolean(runnerAuthToken),
+        health: {
+          ok: healthResponse.status >= 200 && healthResponse.status < 300,
+          httpStatus: healthResponse.status,
+          response: healthResponse.data,
+        },
+      };
+
+      if (!result.health.ok) {
+        result.health.error = `Runner /health 返回异常状态: HTTP ${healthResponse.status}`;
+        return result;
+      }
+
+      const probePayload = {
+        executionId: `DIAG-${Date.now()}`,
+        taskId: 'runner-diagnostics',
+        script: {
+          id: 'runner-diagnostics-script',
+          name: 'runner-diagnostics-script',
+          language: 'python',
+          content: 'print("runner-diagnostics-ok")',
+        },
+        environment: {
+          baseUrl: 'https://example.com',
+          headers: {},
+          variables: {},
+          authConfig: {},
+        },
+        options: {
+          timeoutMs: 5000,
+          pythonBin: this.resolvePythonBin(),
+        },
+      };
+
+      const executeResponse = await axios.post(executeUrl, probePayload, {
+        timeout: 8000,
+        validateStatus: () => true,
+        headers: runnerAuthToken
+          ? { 'X-Runner-Token': runnerAuthToken }
+          : undefined,
+      });
+
+      result.executeProbe = {
+        ok: executeResponse.status >= 200 && executeResponse.status < 300,
+        httpStatus: executeResponse.status,
+        response: this.toLogPreview(executeResponse.data),
+      };
+
+      if (!result.executeProbe.ok) {
+        result.executeProbe.error = `Runner /execute 调用失败: HTTP ${executeResponse.status}`;
+      }
+
+      return result;
+    } catch (error) {
+      const message = this.formatRunnerHttpError(error, 'runner-diagnostics', 'runner-diagnostics', healthUrl);
+      return {
+        runnerUrl: baseUrl,
+        hasAuthTokenConfigured: Boolean(runnerAuthToken),
+        health: {
+          ok: false,
+          error: message,
+        },
+      };
+    }
   }
 
   private async saveExecution(task: TestTask, script: TestScript, environment: Environment | null, result: TestResult) {

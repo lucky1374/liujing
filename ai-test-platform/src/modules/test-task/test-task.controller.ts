@@ -37,6 +37,13 @@ export class TestTaskController {
     return this.taskService.getStatistics(projectId);
   }
 
+  @Get('runner/diagnostics')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '诊断 Python Runner 连接状态' })
+  diagnoseRunner() {
+    return this.executionService.diagnosePythonRunner();
+  }
+
   @Get(':id')
   @ApiOperation({ description: '获取任务详情' })
   findOne(@Param('id') id: string) {

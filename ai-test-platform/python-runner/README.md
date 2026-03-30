@@ -47,6 +47,7 @@ python runner/main.py --payload examples/sample_payload.json
 ```bash
 cd /Users/lj/liujing/ai-test-platform/python-runner
 source .venv/bin/activate
+export RUNNER_AUTH_TOKEN=change-me-runner-token
 uvicorn runner.server:app --host 0.0.0.0 --port 8001
 ```
 
@@ -54,6 +55,16 @@ uvicorn runner.server:app --host 0.0.0.0 --port 8001
 
 - `GET /health`
 - `POST /execute`
+
+## Runner 鉴权
+
+当前最小鉴权方式：
+
+- 请求头：`X-Runner-Token`
+- 环境变量：`RUNNER_AUTH_TOKEN`
+
+如果未配置 `RUNNER_AUTH_TOKEN`，Runner 默认不校验。
+如果已配置，NestJS 侧也需要在 `.env` 中配置相同的 `RUNNER_AUTH_TOKEN`。
 
 ## Payload 说明
 

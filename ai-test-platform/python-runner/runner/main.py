@@ -1,8 +1,12 @@
 import argparse
 import sys
 
-from executor import PythonScriptExecutor
-from utils import dump_result, load_payload
+if __package__:
+    from .executor import PythonScriptExecutor
+    from .utils import dump_result, load_payload
+else:
+    from executor import PythonScriptExecutor
+    from utils import dump_result, load_payload
 
 
 def parse_args() -> argparse.Namespace:
