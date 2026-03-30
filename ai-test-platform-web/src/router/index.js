@@ -59,6 +59,11 @@ const routes = [
         path: 'environments',
         name: 'Environments',
         component: () => import('../views/Environments.vue')
+      },
+      {
+        path: 'troubleshooting-guide',
+        name: 'TroubleshootingGuide',
+        component: () => import('../views/TroubleshootingGuide.vue')
       }
     ]
   }

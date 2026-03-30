@@ -46,6 +46,10 @@
           <el-icon><Setting /></el-icon>
           <span>环境管理</span>
         </el-menu-item>
+        <el-menu-item index="/troubleshooting-guide">
+          <el-icon><Document /></el-icon>
+          <span>联调故障速查</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>

@@ -2,10 +2,14 @@
   <div class="page-container">
     <div class="card-header">
       <h2>测试任务</h2>
-      <el-button type="primary" @click="handleAdd">
-        <el-icon><Plus /></el-icon>
-        新建任务
-      </el-button>
+      <div class="header-actions">
+        <el-button @click="goToTroubleshootingGuide">联调速查</el-button>
+        <el-button :loading="runnerDiagLoading" @click="handleDiagnoseRunner">Runner诊断</el-button>
+        <el-button type="primary" @click="handleAdd">
+          <el-icon><Plus /></el-icon>
+          新建任务
+        </el-button>
+      </div>
     </div>
 
     <el-card>
@@ -137,6 +141,15 @@
     </el-dialog>
 
     <el-drawer v-model="executionDrawerVisible" :title="executionDrawerTitle" size="55%">
+      <el-alert
+        v-if="executionRunnerHint"
+        :title="executionRunnerHint.title"
+        :type="executionRunnerHint.type"
+        :description="executionRunnerHint.description"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+      />
       <el-table :data="executionList" border stripe>
         <el-table-column prop="scriptName" label="脚本名称" min-width="180" />
         <el-table-column prop="status" label="状态" width="110">
@@ -158,10 +171,16 @@
         <el-table-column prop="requestMethod" label="请求方式" width="110" />
         <el-table-column prop="requestUrl" label="请求地址" min-width="220" show-overflow-tooltip />
         <el-table-column prop="errorMessage" label="错误信息" min-width="220" show-overflow-tooltip />
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="快速定位建议" min-width="260" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ getExecutionQuickTip(row) || '-' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link @click="handleViewExecutionDetail(row)">详情</el-button>
             <el-button v-if="row.status === 'failed'" type="danger" link @click="handleCreateDefect(row)">转缺陷</el-button>
+            <el-button v-if="row.status === 'failed'" type="warning" link @click="handleCopyExecutionCommands(row)">复制排查命令</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -184,6 +203,12 @@
           <el-descriptions-item label="耗时(ms)">{{ currentExecution.durationMs }}</el-descriptions-item>
           <el-descriptions-item label="请求地址" :span="2">{{ currentExecution.requestUrl || '-' }}</el-descriptions-item>
           <el-descriptions-item label="错误信息" :span="2">{{ currentExecution.errorMessage || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="快速定位建议" :span="2">{{ currentExecutionQuickTip || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="排查命令" :span="2">
+            <div class="inline-actions">
+              <el-button size="small" @click="handleCopyExecutionCommands(currentExecution)">复制排查命令</el-button>
+            </div>
+          </el-descriptions-item>
         </el-descriptions>
 
         <el-divider>请求体</el-divider>
@@ -197,6 +222,38 @@
 
         <el-divider>错误堆栈</el-divider>
         <pre class="json-block">{{ currentExecution.errorStack || '无' }}</pre>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="runnerDiagVisible" title="Runner诊断" width="680px">
+      <template v-if="runnerDiag">
+        <div class="diag-grid">
+          <div class="diag-card" :class="runnerConfigState.type">
+            <div class="diag-title">配置状态</div>
+            <div class="diag-status">{{ runnerConfigState.label }}</div>
+            <div class="diag-desc">Runner URL: {{ runnerDiag.runnerUrl || '-' }}</div>
+            <div class="diag-desc">Token配置: {{ runnerDiag.hasAuthTokenConfigured ? '已配置' : '未配置' }}</div>
+          </div>
+
+          <div class="diag-card" :class="runnerHealthState.type">
+            <div class="diag-title">Health检查</div>
+            <div class="diag-status">{{ runnerHealthState.label }}</div>
+            <div class="diag-desc">HTTP状态: {{ runnerDiag.health?.httpStatus || '-' }}</div>
+            <div class="diag-desc">详情: {{ runnerDiag.health?.error || formatCompact(runnerDiag.health?.response) }}</div>
+          </div>
+
+          <div class="diag-card" :class="runnerExecuteState.type">
+            <div class="diag-title">Execute探测</div>
+            <div class="diag-status">{{ runnerExecuteState.label }}</div>
+            <div class="diag-desc">HTTP状态: {{ runnerDiag.executeProbe?.httpStatus || '-' }}</div>
+            <div class="diag-desc">详情: {{ runnerDiag.executeProbe?.error || formatCompact(runnerDiag.executeProbe?.response) }}</div>
+          </div>
+        </div>
+      </template>
+
+      <template #footer>
+        <el-button @click="handleCopyRunnerDiag" :disabled="!runnerDiag">复制诊断信息</el-button>
+        <el-button @click="runnerDiagVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -217,9 +274,12 @@ const executionList = ref([])
 const dialogVisible = ref(false)
 const executionDrawerVisible = ref(false)
 const executionDetailVisible = ref(false)
+const runnerDiagVisible = ref(false)
 const dialogTitle = ref('')
 const executionDrawerTitle = ref('执行记录')
 const currentExecution = ref(null)
+const runnerDiag = ref(null)
+const runnerDiagLoading = ref(false)
 const projectStore = useProjectStore()
 const router = useRouter()
 const route = useRoute()
@@ -296,6 +356,65 @@ const envTypeMap = {
 }
 
 const projectNameMap = computed(() => Object.fromEntries(projects.value.map((item) => [item.id, item.name])))
+
+const executionRunnerHint = computed(() => {
+  if (!executionList.value.length) return null
+
+  const hasAuthFailure = executionList.value.some((item) => {
+    const source = String(item.runnerSource || '')
+    const message = String(item.errorMessage || '')
+    return source === 'python_http' && (message.includes('鉴权失败') || message.includes('HTTP 401') || message.includes('HTTP 403'))
+  })
+
+  if (hasAuthFailure) {
+    return {
+      type: 'error',
+      title: '检测到 Python HTTP Runner 鉴权失败',
+      description: '请检查后端 RUNNER_AUTH_TOKEN 与 Runner 进程 RUNNER_AUTH_TOKEN 是否一致。'
+    }
+  }
+
+  const localCount = executionList.value.filter((item) => String(item.runnerSource || '') === 'python_local').length
+  const httpCount = executionList.value.filter((item) => String(item.runnerSource || '') === 'python_http').length
+
+  if (localCount > 0 && httpCount === 0) {
+    return {
+      type: 'warning',
+      title: '当前任务使用了 Python 本地兜底',
+      description: '建议点击“Runner诊断”检查 HTTP Runner 连通性与鉴权配置。'
+    }
+  }
+
+  return null
+})
+
+const currentExecutionQuickTip = computed(() => {
+  if (!currentExecution.value) return ''
+  return getExecutionQuickTip(currentExecution.value)
+})
+
+const runnerConfigState = computed(() => {
+  const data = runnerDiag.value
+  if (!data) return { type: 'diag-info', label: '待检查' }
+  if (data.runnerUrl && data.hasAuthTokenConfigured) return { type: 'diag-success', label: '正常' }
+  if (data.runnerUrl) return { type: 'diag-warning', label: '缺少Token配置' }
+  return { type: 'diag-error', label: '未配置Runner URL' }
+})
+
+const runnerHealthState = computed(() => {
+  const data = runnerDiag.value
+  if (!data) return { type: 'diag-info', label: '待检查' }
+  if (data.health?.ok) return { type: 'diag-success', label: '通过' }
+  return { type: 'diag-error', label: '失败' }
+})
+
+const runnerExecuteState = computed(() => {
+  const data = runnerDiag.value
+  if (!data) return { type: 'diag-info', label: '待检查' }
+  if (!data.executeProbe) return { type: 'diag-warning', label: '未执行' }
+  if (data.executeProbe.ok) return { type: 'diag-success', label: '通过' }
+  return { type: 'diag-error', label: '失败' }
+})
 
 const loadProjects = async () => {
   const res = await api.get('/projects', { params: { page: 1, pageSize: 100 } })
@@ -425,6 +544,102 @@ const handleExecute = async (row) => {
   await handleViewExecutions(row)
 }
 
+const goToTroubleshootingGuide = () => {
+  router.push('/troubleshooting-guide')
+}
+
+const handleDiagnoseRunner = async () => {
+  runnerDiagLoading.value = true
+  try {
+    const res = await api.get('/test-tasks/runner/diagnostics')
+    runnerDiag.value = res.data || null
+    runnerDiagVisible.value = true
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || 'Runner诊断失败')
+  } finally {
+    runnerDiagLoading.value = false
+  }
+}
+
+const handleCopyRunnerDiag = async () => {
+  if (!runnerDiag.value) return
+  const text = buildRunnerDiagText(runnerDiag.value)
+  await copyText(text, '诊断信息已复制')
+}
+
+const buildRunnerDiagText = (data) => {
+  return [
+    '[Runner诊断结果]',
+    `Runner URL: ${data.runnerUrl || '-'}`,
+    `Token已配置: ${data.hasAuthTokenConfigured ? '是' : '否'}`,
+    `Health检查: ${data.health?.ok ? '通过' : '失败'}${data.health?.httpStatus ? ` (HTTP ${data.health.httpStatus})` : ''}`,
+    `Health详情: ${data.health?.error || formatCompact(data.health?.response)}`,
+    `Execute探测: ${data.executeProbe ? (data.executeProbe.ok ? '通过' : '失败') : '未执行'}${data.executeProbe?.httpStatus ? ` (HTTP ${data.executeProbe.httpStatus})` : ''}`,
+    `Execute详情: ${data.executeProbe?.error || formatCompact(data.executeProbe?.response)}`
+  ].join('\n')
+}
+
+const handleCopyExecutionCommands = async (execution) => {
+  const commands = getExecutionQuickCommands(execution)
+  await copyText(commands, '排查命令已复制')
+}
+
+const getExecutionQuickCommands = (execution) => {
+  if (!execution || execution.status !== 'failed') {
+    return '# 当前执行非失败状态，无需排查命令'
+  }
+
+  const source = String(execution.runnerSource || '')
+  const errorMessage = String(execution.errorMessage || '')
+  const errorStack = String(execution.errorStack || '')
+  const fullText = `${errorMessage}\n${errorStack}`.toLowerCase()
+
+  const lines = [
+    '# Runner基础检查',
+    'curl -i http://localhost:8001/health',
+    'lsof -i :8001 -sTCP:LISTEN -n -P',
+    'printenv | grep -E "PYTHON_RUNNER_URL|RUNNER_AUTH_TOKEN"',
+    ''
+  ]
+
+  if (source === 'python_http') {
+    lines.push('# HTTP Runner探测', 'curl -i -X POST "http://localhost:8001/execute" -H "Content-Type: application/json" -H "X-Runner-Token: <YOUR_RUNNER_AUTH_TOKEN>" -d "{\"executionId\":\"probe\",\"taskId\":\"diag\",\"script\":{\"id\":\"s1\",\"name\":\"diag\",\"language\":\"python\",\"content\":\"print(1)\"},\"environment\":{\"baseUrl\":\"https://example.com\",\"headers\":{},\"variables\":{},\"authConfig\":{}},\"options\":{\"timeoutMs\":5000,\"pythonBin\":\"python3\"}}"', '')
+  }
+
+  if (fullText.includes('http 401') || fullText.includes('http 403') || fullText.includes('unauthorized') || errorMessage.includes('鉴权失败')) {
+    lines.push('# 鉴权排查', 'echo "检查后端 .env 与 Runner 进程中的 RUNNER_AUTH_TOKEN 是否完全一致"', 'ps eww -p $(lsof -ti :8001)', '')
+  }
+
+  if (fullText.includes('econnrefused') || fullText.includes('connect refused')) {
+    lines.push('# 连接被拒绝排查', 'echo "确认 python-runner 服务已启动并监听8001端口"', 'cd /Users/lj/liujing/ai-test-platform/python-runner && source .venv/bin/activate && uvicorn runner.server:app --host 0.0.0.0 --port 8001', '')
+  }
+
+  if (source === 'python_local' || fullText.includes('no module named')) {
+    lines.push('# 本地兜底执行排查', 'cd /Users/lj/liujing/ai-test-platform/python-runner && source .venv/bin/activate && pip install -r requirements.txt', 'cd /Users/lj/liujing/ai-test-platform/python-runner && source .venv/bin/activate && python -m runner.main --payload examples/sample_payload.json', '')
+  }
+
+  lines.push('# 后端Runner诊断接口', 'curl -H "Authorization: Bearer <YOUR_JWT_TOKEN>" http://localhost:3000/test-tasks/runner/diagnostics')
+
+  return lines.join('\n')
+}
+
+const copyText = async (text, successMessage) => {
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success(successMessage)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+    ElMessage.success(successMessage)
+  }
+}
+
 const handleViewExecutions = async (row) => {
   const res = await api.get(`/test-tasks/${row.id}/executions`)
   executionList.value = res.data || []
@@ -462,10 +677,17 @@ const handleDelete = async (row) => {
   loadData()
 }
 
+const normalizeQueryValue = (value) => {
+  if (Array.isArray(value)) return value[0] || ''
+  if (value === null || value === undefined) return ''
+  return String(value)
+}
+
 onMounted(async () => {
   await loadProjects()
-  if (route.query.projectId) queryForm.projectId = route.query.projectId
-  if (route.query.taskId) queryForm.taskId = route.query.taskId
+  queryForm.projectId = normalizeQueryValue(route.query.projectId)
+  queryForm.taskId = normalizeQueryValue(route.query.taskId)
+  queryForm.status = normalizeQueryValue(route.query.status)
   if (projectStore.selectedProjectId) {
     queryForm.projectId = queryForm.projectId || projectStore.selectedProjectId
     form.projectId = projectStore.selectedProjectId
@@ -486,8 +708,9 @@ watch(() => projectStore.selectedProjectId, async (projectId) => {
 })
 
 watch(() => route.query, async (query) => {
-  queryForm.projectId = query.projectId || projectStore.selectedProjectId || ''
-  queryForm.taskId = query.taskId || ''
+  queryForm.projectId = normalizeQueryValue(query.projectId) || projectStore.selectedProjectId || ''
+  queryForm.taskId = normalizeQueryValue(query.taskId)
+  queryForm.status = normalizeQueryValue(query.status)
   await loadData()
 })
 
@@ -495,6 +718,16 @@ const formatJson = (value) => {
   if (!value) return '无'
   try {
     return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+const formatCompact = (value) => {
+  if (value === undefined || value === null || value === '') return '-'
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value)
   } catch {
     return String(value)
   }
@@ -523,9 +756,123 @@ const maskToken = (value) => {
   if (value.length <= 10) return '******'
   return `${value.slice(0, 4)}******${value.slice(-4)}`
 }
+
+const getExecutionQuickTip = (execution) => {
+  if (!execution || execution.status !== 'failed') return ''
+
+  const runnerSource = String(execution.runnerSource || '')
+  const errorMessage = String(execution.errorMessage || '')
+  const errorStack = String(execution.errorStack || '')
+  const fullText = `${errorMessage}\n${errorStack}`.toLowerCase()
+
+  if (
+    runnerSource === 'python_http' &&
+    (errorMessage.includes('鉴权失败') || fullText.includes('http 401') || fullText.includes('http 403') || fullText.includes('unauthorized'))
+  ) {
+    return '检查后端 RUNNER_AUTH_TOKEN 与 Runner 进程 RUNNER_AUTH_TOKEN 是否一致，并重启后端和Runner。'
+  }
+
+  if (fullText.includes('econnrefused') || fullText.includes('connect refused')) {
+    return 'Runner 服务可能未启动，或 PYTHON_RUNNER_URL/端口配置错误。请先检查 Runner 进程与地址。'
+  }
+
+  if (fullText.includes('enotfound') || fullText.includes('eai_again') || fullText.includes('name or service not known')) {
+    return 'Runner 地址的域名解析失败，请检查 PYTHON_RUNNER_URL 的主机名与本机 DNS 配置。'
+  }
+
+  if (fullText.includes('etimedout') || fullText.includes('timeout')) {
+    return 'Runner 调用超时，请检查 Runner 负载、网络连通性，必要时提高超时阈值。'
+  }
+
+  if (runnerSource === 'python_local' && fullText.includes('no module named')) {
+    return '本地 Python 依赖缺失，请在 python-runner 虚拟环境执行 pip install -r requirements.txt。'
+  }
+
+  if (runnerSource === 'python_http' && (fullText.includes('http 500') || fullText.includes('internal server error'))) {
+    return 'Runner 内部执行异常，请查看 python-runner 日志与脚本运行错误堆栈。'
+  }
+
+  if (runnerSource === 'python_local') {
+    return '当前为本地兜底失败，优先检查 python-runner/.venv、PYTHON_BIN 以及脚本依赖。'
+  }
+
+  if (runnerSource === 'python_http') {
+    return '请先点击 Runner诊断，确认 /health 与 /execute 探测均通过后再复测。'
+  }
+
+  return '请结合错误信息和堆栈排查脚本逻辑、环境变量与目标接口可用性。'
+}
 </script>
 
 <style scoped>
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.diag-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.diag-card {
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff;
+}
+
+.diag-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.diag-status {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.diag-desc {
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.inline-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.diag-success {
+  border-color: #95d475;
+  background: #f0f9eb;
+}
+
+.diag-warning {
+  border-color: #e6a23c;
+  background: #fdf6ec;
+}
+
+.diag-error {
+  border-color: #f56c6c;
+  background: #fef0f0;
+}
+
+.diag-info {
+  border-color: #bfcbd9;
+  background: #f4f4f5;
+}
+
+@media (min-width: 900px) {
+  .diag-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
 .json-block {
   max-height: 260px;
   overflow: auto;
