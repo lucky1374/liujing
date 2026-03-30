@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { In, Repository } from 'typeorm';
 import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
@@ -10,7 +11,7 @@ import { promisify } from 'util';
 import { TestTask, TaskStatus } from './entities/test-task.entity';
 import { TestScript, ScriptExecutionMode } from '../test-script/entities/test-script.entity';
 import { Environment } from '../environment/entities/environment.entity';
-import { ExecutionErrorType, ExecutionStatus, TestExecution } from './entities/test-execution.entity';
+import { ExecutionErrorType, ExecutionRunnerSource, ExecutionStatus, TestExecution } from './entities/test-execution.entity';
 import axios from 'axios';
 
 export interface TestResult {
@@ -20,6 +21,7 @@ export interface TestResult {
   duration: number;
   url?: string;
   method?: string;
+  runnerSource?: ExecutionRunnerSource;
   requestHeaders?: Record<string, any>;
   requestBody?: any;
   error?: string;
@@ -41,6 +43,7 @@ export class TestExecutionService {
     private environmentRepository: Repository<Environment>,
     @InjectRepository(TestExecution)
     private executionRepository: Repository<TestExecution>,
+    private configService: ConfigService,
   ) {}
 
   async executeTask(taskId: string, environment?: string, environmentId?: string): Promise<TestResult[]> {
@@ -266,32 +269,66 @@ export class TestExecutionService {
   }
 
   private async executeByPythonRunner(script: TestScript, task: TestTask, environment: Environment | null, startTime: number): Promise<TestResult> {
+    const runnerUrl = this.configService.get<string>('runner.pythonRunnerUrl');
+
+    if (runnerUrl) {
+      return this.executeByPythonRunnerHttp(runnerUrl, script, task, environment, startTime);
+    }
+
+    return this.executeByPythonRunnerLocal(script, task, environment, startTime);
+  }
+
+  private async executeByPythonRunnerHttp(runnerUrl: string, script: TestScript, task: TestTask, environment: Environment | null, startTime: number): Promise<TestResult> {
+    const payload = this.buildPythonRunnerPayload(script, task, environment);
+
+    try {
+      const { data } = await axios.post(`${runnerUrl.replace(/\/$/, '')}/execute`, payload, {
+        timeout: 35000,
+      });
+
+      const result: TestResult = {
+        scriptId: script.id,
+        scriptName: script.name,
+        status: data.status === 'passed' ? 'passed' : 'failed',
+        duration: data.durationMs || Date.now() - startTime,
+        runnerSource: ExecutionRunnerSource.PYTHON_HTTP,
+        url: data.request?.url || environment?.baseUrl,
+        method: data.request?.method || 'PYTHON',
+        requestHeaders: data.request?.headers || environment?.headers || {},
+        requestBody: data.request?.body,
+        error: data.error || undefined,
+        errorStack: data.status === 'passed' ? undefined : (data.logs?.stderr || undefined),
+        response: data.response
+          ? {
+              status: data.response.status,
+              data: data.response.body,
+            }
+          : {
+              status: data.exitCode === 0 ? 200 : 500,
+              data: {
+                stdout: data.logs?.stdout,
+                stderr: data.logs?.stderr,
+                exitCode: data.exitCode,
+              },
+            },
+      };
+
+      await this.saveExecution(task, script, environment, result);
+      return result;
+    } catch (error) {
+      this.logger.warn(`HTTP runner 调用失败，回退到本地执行: ${error.message}`);
+      return this.executeByPythonRunnerLocal(script, task, environment, startTime);
+    }
+  }
+
+  private async executeByPythonRunnerLocal(script: TestScript, task: TestTask, environment: Environment | null, startTime: number): Promise<TestResult> {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-test-python-runner-'));
     const payloadPath = path.join(tempDir, 'payload.json');
     const runnerEntry = path.resolve(process.cwd(), 'python-runner/runner/main.py');
     const pythonBin = this.resolvePythonBin();
 
     try {
-      const payload = {
-        executionId: `RUNNER-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        taskId: task.id,
-        script: {
-          id: script.id,
-          name: script.name,
-          language: script.language,
-          content: script.scriptContent.replace(/\{\{baseUrl\}\}/g, environment?.baseUrl || ''),
-        },
-        environment: {
-          baseUrl: environment?.baseUrl || '',
-          headers: environment?.headers || {},
-          variables: environment?.variables || {},
-          authConfig: environment?.authConfig || {},
-        },
-        options: {
-          timeoutMs: 30000,
-          pythonBin,
-        },
-      };
+      const payload = this.buildPythonRunnerPayload(script, task, environment, pythonBin);
 
       await fs.writeFile(payloadPath, JSON.stringify(payload, null, 2), 'utf-8');
 
@@ -306,6 +343,7 @@ export class TestExecutionService {
         scriptName: script.name,
         status: runnerResult.status === 'passed' ? 'passed' : 'failed',
         duration: runnerResult.durationMs || Date.now() - startTime,
+        runnerSource: ExecutionRunnerSource.PYTHON_LOCAL,
         url: runnerResult.request?.url || environment?.baseUrl,
         method: runnerResult.request?.method || 'PYTHON',
         requestHeaders: runnerResult.request?.headers || environment?.headers || {},
@@ -347,6 +385,7 @@ export class TestExecutionService {
         scriptName: script.name,
         status: parsed?.status === 'passed' ? 'passed' : 'failed',
         duration: parsed?.durationMs || Date.now() - startTime,
+        runnerSource: ExecutionRunnerSource.PYTHON_LOCAL,
         url: parsed?.request?.url || environment?.baseUrl,
         method: parsed?.request?.method || 'PYTHON',
         requestHeaders: parsed?.request?.headers || environment?.headers || {},
@@ -397,6 +436,7 @@ export class TestExecutionService {
       scriptName: script.name,
       requestUrl: result.url,
       requestMethod: result.method,
+      runnerSource: result.runnerSource,
       requestHeaders: result.requestHeaders,
       requestBody: result.requestBody,
       responseStatus: result.response?.status,
@@ -496,5 +536,28 @@ export class TestExecutionService {
     }
 
     return 'python3';
+  }
+
+  private buildPythonRunnerPayload(script: TestScript, task: TestTask, environment: Environment | null, pythonBin?: string) {
+    return {
+      executionId: `RUNNER-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      taskId: task.id,
+      script: {
+        id: script.id,
+        name: script.name,
+        language: script.language,
+        content: script.scriptContent.replace(/\{\{baseUrl\}\}/g, environment?.baseUrl || ''),
+      },
+      environment: {
+        baseUrl: environment?.baseUrl || '',
+        headers: environment?.headers || {},
+        variables: environment?.variables || {},
+        authConfig: environment?.authConfig || {},
+      },
+      options: {
+        timeoutMs: 30000,
+        pythonBin: pythonBin || this.resolvePythonBin(),
+      },
+    };
   }
 }

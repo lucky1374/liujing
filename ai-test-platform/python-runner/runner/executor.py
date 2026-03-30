@@ -5,7 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from models import ExecutionPayload
+from .models import ExecutionPayload
 
 
 class PythonScriptExecutor:

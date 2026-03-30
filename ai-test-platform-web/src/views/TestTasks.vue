@@ -148,6 +148,13 @@
         </el-table-column>
         <el-table-column prop="responseStatus" label="响应码" width="100" />
         <el-table-column prop="durationMs" label="耗时(ms)" width="120" />
+        <el-table-column prop="runnerSource" label="执行来源" width="140">
+          <template #default="{ row }">
+            <el-tag :type="runnerSourceMap[row.runnerSource]?.type || 'info'">
+              {{ runnerSourceMap[row.runnerSource]?.label || row.runnerSource || '-' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="requestMethod" label="请求方式" width="110" />
         <el-table-column prop="requestUrl" label="请求地址" min-width="220" show-overflow-tooltip />
         <el-table-column prop="errorMessage" label="错误信息" min-width="220" show-overflow-tooltip />
@@ -171,6 +178,7 @@
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="错误类型">{{ currentExecution.errorType || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="执行来源">{{ runnerSourceMap[currentExecution.runnerSource]?.label || currentExecution.runnerSource || '-' }}</el-descriptions-item>
           <el-descriptions-item label="请求方式">{{ currentExecution.requestMethod || '-' }}</el-descriptions-item>
           <el-descriptions-item label="响应码">{{ currentExecution.responseStatus || '-' }}</el-descriptions-item>
           <el-descriptions-item label="耗时(ms)">{{ currentExecution.durationMs }}</el-descriptions-item>
@@ -272,6 +280,12 @@ const executionStatusMap = {
   skipped: { label: '跳过', type: 'warning' },
   running: { label: '执行中', type: 'primary' },
   pending: { label: '待执行', type: 'info' }
+}
+
+const runnerSourceMap = {
+  lite: { label: 'Lite执行器', type: 'success' },
+  python_http: { label: 'Python HTTP Runner', type: 'warning' },
+  python_local: { label: 'Python 本地兜底', type: 'info' }
 }
 
 const envTypeMap = {

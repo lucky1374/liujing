@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from models import EnvironmentPayload, ExecutionPayload, OptionsPayload, ScriptPayload
+from .models import EnvironmentPayload, ExecutionPayload, OptionsPayload, ScriptPayload
 
 
 def load_payload(payload_path: str) -> ExecutionPayload:
@@ -20,3 +20,16 @@ def load_payload(payload_path: str) -> ExecutionPayload:
 
 def dump_result(result: dict) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def build_payload_from_dict(raw: dict) -> ExecutionPayload:
+    script = ScriptPayload(**raw["script"])
+    environment = EnvironmentPayload(**raw["environment"])
+    options = OptionsPayload(**raw.get("options", {}))
+    return ExecutionPayload(
+        executionId=raw["executionId"],
+        taskId=raw["taskId"],
+        script=script,
+        environment=environment,
+        options=options,
+    )

@@ -16,6 +16,12 @@ export enum ExecutionErrorType {
   UNKNOWN = 'unknown',
 }
 
+export enum ExecutionRunnerSource {
+  LITE = 'lite',
+  PYTHON_HTTP = 'python_http',
+  PYTHON_LOCAL = 'python_local',
+}
+
 @Entity('test_executions')
 export class TestExecution {
   @PrimaryGeneratedColumn('uuid')
@@ -50,6 +56,9 @@ export class TestExecution {
 
   @Column({ nullable: true })
   requestMethod: string;
+
+  @Column({ type: 'enum', enum: ExecutionRunnerSource, nullable: true })
+  runnerSource: ExecutionRunnerSource;
 
   @Column({ type: 'json', nullable: true })
   requestHeaders: Record<string, any>;

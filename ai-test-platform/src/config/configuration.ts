@@ -28,4 +28,8 @@ export default () => ({
     baseUrl: process.env.AI_BASE_URL || 'https://api.openai.com/v1',
     model: process.env.AI_MODEL || 'gpt-4',
   },
+
+  runner: {
+    pythonRunnerUrl: process.env.PYTHON_RUNNER_URL || 'http://localhost:8001',
+  },
 });

@@ -42,6 +42,19 @@ source .venv/bin/activate
 python runner/main.py --payload examples/sample_payload.json
 ```
 
+## 启动 HTTP 服务
+
+```bash
+cd /Users/lj/liujing/ai-test-platform/python-runner
+source .venv/bin/activate
+uvicorn runner.server:app --host 0.0.0.0 --port 8001
+```
+
+可用接口：
+
+- `GET /health`
+- `POST /execute`
+
 ## Payload 说明
 
 Runner 当前要求 payload 至少包含：
