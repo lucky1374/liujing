@@ -30,8 +30,15 @@
     <el-card class="runner-overview-card" v-loading="observabilityLoading">
       <template #header>
         <div class="runner-overview-header">
-          <span>执行观测概览（近{{ observability.hours }}小时）</span>
-          <el-button size="small" @click="loadObservabilityOverview">刷新</el-button>
+          <span>执行观测概览（{{ observabilityRangeLabel }}）</span>
+          <div class="obs-header-actions">
+            <el-radio-group v-model="observability.hours" size="small" @change="handleObservabilityRangeChange">
+              <el-radio-button v-for="item in observabilityRangeOptions" :key="item.value" :label="item.value">
+                {{ item.label }}
+              </el-radio-button>
+            </el-radio-group>
+            <el-button size="small" @click="loadObservabilityOverview">刷新</el-button>
+          </div>
         </div>
       </template>
       <div class="obs-overview-grid">
@@ -432,6 +439,12 @@ const statusFilterOptions = [
   { label: '失败', value: 'failed' }
 ]
 
+const observabilityRangeOptions = [
+  { label: '近1小时', value: 1 },
+  { label: '近24小时', value: 24 },
+  { label: '近7天', value: 168 }
+]
+
 const executionStatusMap = {
   passed: { label: '通过', type: 'success' },
   failed: { label: '失败', type: 'danger' },
@@ -554,6 +567,11 @@ const globalFailureReasonOptions = computed(() => {
   return Array.from(new Set(fromOverview))
 })
 
+const observabilityRangeLabel = computed(() => {
+  const matched = observabilityRangeOptions.find((item) => item.value === observability.value.hours)
+  return matched?.label || `近${observability.value.hours}小时`
+})
+
 const loadProjects = async () => {
   const res = await api.get('/projects', { params: { page: 1, pageSize: 100 } })
   projects.value = res.data.list || []
@@ -604,6 +622,14 @@ const handleGlobalFailureReasonChange = async () => {
     queryForm.status = 'failed'
   }
   await loadData()
+}
+
+const handleObservabilityRangeChange = async () => {
+  await loadObservabilityOverview()
+  if (globalFailureReasonFilter.value) {
+    pagination.page = 1
+    await loadData()
+  }
 }
 
 const loadProjectResources = async (projectId) => {
@@ -1118,6 +1144,12 @@ const getExecutionReason = (execution) => {
   justify-content: space-between;
 }
 
+.obs-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .runner-overview-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1246,6 +1278,17 @@ const getExecutionReason = (execution) => {
 }
 
 @media (max-width: 899px) {
+  .runner-overview-header {
+    align-items: flex-start;
+    gap: 8px;
+    flex-direction: column;
+  }
+
+  .obs-header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .obs-overview-grid,
   .obs-reasons {
     grid-template-columns: 1fr;
