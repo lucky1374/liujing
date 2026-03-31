@@ -694,6 +694,47 @@ export class TestExecutionService {
     return this.executionRepository.findOne({ where: { id } });
   }
 
+  async getObservabilityOverview(hours: number = 24): Promise<{
+    timeRangeHours: number;
+    failedTotal: number;
+    byRunnerSource: Record<string, number>;
+    topFailureReasons: Array<{ reason: string; count: number }>;
+  }> {
+    const safeHours = Number.isFinite(hours) ? Math.min(Math.max(1, Math.floor(hours)), 168) : 24;
+    const since = new Date(Date.now() - safeHours * 60 * 60 * 1000);
+    const failedExecutions = await this.executionRepository.find({
+      where: {
+        status: ExecutionStatus.FAILED,
+      },
+      order: { createdAt: 'DESC' },
+      take: 500,
+    });
+
+    const filtered = failedExecutions.filter((item) => item.createdAt && item.createdAt >= since);
+    const byRunnerSource: Record<string, number> = {};
+    const reasonCounter: Record<string, number> = {};
+
+    for (const item of filtered) {
+      const source = item.runnerSource || 'unknown';
+      byRunnerSource[source] = (byRunnerSource[source] || 0) + 1;
+
+      const reason = this.pickFailureReason(item);
+      reasonCounter[reason] = (reasonCounter[reason] || 0) + 1;
+    }
+
+    const topFailureReasons = Object.entries(reasonCounter)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([reason, count]) => ({ reason, count }));
+
+    return {
+      timeRangeHours: safeHours,
+      failedTotal: filtered.length,
+      byRunnerSource,
+      topFailureReasons,
+    };
+  }
+
   async diagnosePythonRunner(): Promise<{
     runnerUrl: string | null;
     hasAuthTokenConfigured: boolean;
@@ -892,6 +933,21 @@ export class TestExecutionService {
       _runnerData: responseData,
       _runnerMeta: executionMeta,
     };
+  }
+
+  private pickFailureReason(execution: TestExecution): string {
+    const body = execution.responseBody as any;
+    const reason = body?._runnerMeta?.lastHttpReason;
+    if (typeof reason === 'string' && reason) return reason;
+
+    const error = (execution.errorMessage || '').toLowerCase();
+    if (error.includes('401') || error.includes('403') || error.includes('unauthorized')) return 'auth_failed';
+    if (error.includes('429') || error.includes('queue timeout')) return 'queue_timeout';
+    if (error.includes('timeout') || error.includes('timed out')) return 'runner_timeout';
+    if (error.includes('econnrefused') || error.includes('connect refused')) return 'runner_unreachable';
+    if (error.includes('enotfound') || error.includes('eai_again')) return 'runner_dns_error';
+    if (execution.runnerSource === ExecutionRunnerSource.PYTHON_LOCAL) return 'python_local_error';
+    return 'unknown';
   }
 
   private mapExecutionStatus(status: TestResult['status']): ExecutionStatus {

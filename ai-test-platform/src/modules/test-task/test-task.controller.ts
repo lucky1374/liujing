@@ -44,6 +44,13 @@ export class TestTaskController {
     return this.executionService.diagnosePythonRunner();
   }
 
+  @Get('observability/overview')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '获取执行观测概览' })
+  getObservabilityOverview(@Query('hours') hours?: string) {
+    return this.executionService.getObservabilityOverview(hours ? Number(hours) : 24);
+  }
+
   @Get(':id')
   @ApiOperation({ description: '获取任务详情' })
   findOne(@Param('id') id: string) {

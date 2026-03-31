@@ -27,6 +27,35 @@
       </div>
     </el-card>
 
+    <el-card class="runner-overview-card" v-loading="observabilityLoading">
+      <template #header>
+        <div class="runner-overview-header">
+          <span>执行观测概览（近{{ observability.hours }}小时）</span>
+          <el-button size="small" @click="loadObservabilityOverview">刷新</el-button>
+        </div>
+      </template>
+      <div class="obs-overview-grid">
+        <div class="obs-overview-item">
+          <div class="runner-overview-label">失败总数</div>
+          <div class="runner-overview-value">{{ observability.failedTotal }}</div>
+        </div>
+        <div class="obs-overview-item">
+          <div class="runner-overview-label">HTTP Runner失败</div>
+          <div class="runner-overview-value">{{ observability.byRunnerSource.python_http || 0 }}</div>
+        </div>
+        <div class="obs-overview-item">
+          <div class="runner-overview-label">本地兜底失败</div>
+          <div class="runner-overview-value">{{ observability.byRunnerSource.python_local || 0 }}</div>
+        </div>
+      </div>
+      <div class="obs-reasons" v-if="observability.topFailureReasons.length">
+        <div class="obs-reason-item" v-for="item in observability.topFailureReasons" :key="item.reason">
+          <span>{{ item.reason }}</span>
+          <el-tag type="danger">{{ item.count }}</el-tag>
+        </div>
+      </div>
+    </el-card>
+
     <el-card>
       <el-form :inline="true" :model="queryForm">
         <el-form-item label="所属项目">
@@ -309,12 +338,19 @@ const currentExecution = ref(null)
 const runnerDiag = ref(null)
 const runnerDiagLoading = ref(false)
 const runnerOverviewLoading = ref(false)
+const observabilityLoading = ref(false)
 const runnerOverview = ref({
   maxConcurrency: 0,
   running: 0,
   waiting: 0,
   rejected: 0,
   queueTimeoutMs: 0
+})
+const observability = ref({
+  hours: 24,
+  failedTotal: 0,
+  byRunnerSource: {},
+  topFailureReasons: []
 })
 let runnerOverviewTimer = null
 const projectStore = useProjectStore()
@@ -627,6 +663,24 @@ const loadRunnerOverview = async (silent = false) => {
   }
 }
 
+const loadObservabilityOverview = async (silent = false) => {
+  if (!silent) observabilityLoading.value = true
+  try {
+    const res = await api.get('/test-tasks/observability/overview', { params: { hours: observability.value.hours } })
+    const data = res.data || {}
+    observability.value = {
+      hours: data.timeRangeHours || 24,
+      failedTotal: Number(data.failedTotal || 0),
+      byRunnerSource: data.byRunnerSource || {},
+      topFailureReasons: Array.isArray(data.topFailureReasons) ? data.topFailureReasons : []
+    }
+  } catch {
+    // 静默轮询，不打扰正常页面操作
+  } finally {
+    if (!silent) observabilityLoading.value = false
+  }
+}
+
 const applyRunnerOverview = (diag) => {
   const limiter = parseLimiter(diag?.statsProbe?.response)
   if (!limiter) return
@@ -791,9 +845,11 @@ onMounted(async () => {
   }
   await loadData()
   await loadRunnerOverview()
+  await loadObservabilityOverview()
 
   runnerOverviewTimer = window.setInterval(() => {
     loadRunnerOverview(true)
+    loadObservabilityOverview(true)
   }, 10000)
 })
 
@@ -973,6 +1029,36 @@ const formatRetryMeta = (execution) => {
   color: #303133;
 }
 
+.obs-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.obs-overview-item {
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fcfcfc;
+}
+
+.obs-reasons {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.obs-reason-item {
+  border: 1px dashed #e4e7ed;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
 .diag-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -1037,6 +1123,13 @@ const formatRetryMeta = (execution) => {
 
   .diag-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 899px) {
+  .obs-overview-grid,
+  .obs-reasons {
+    grid-template-columns: 1fr;
   }
 }
 
