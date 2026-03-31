@@ -735,6 +735,43 @@ export class TestExecutionService {
     };
   }
 
+  async getTaskIdsByFailureReason(reason: string, hours: number = 24): Promise<{
+    reason: string;
+    timeRangeHours: number;
+    taskIds: string[];
+    total: number;
+  }> {
+    const normalizedReason = (reason || '').trim();
+    if (!normalizedReason) {
+      return { reason: '', timeRangeHours: 24, taskIds: [], total: 0 };
+    }
+
+    const safeHours = Number.isFinite(hours) ? Math.min(Math.max(1, Math.floor(hours)), 168) : 24;
+    const since = new Date(Date.now() - safeHours * 60 * 60 * 1000);
+    const failedExecutions = await this.executionRepository.find({
+      where: {
+        status: ExecutionStatus.FAILED,
+      },
+      order: { createdAt: 'DESC' },
+      take: 3000,
+    });
+
+    const taskIdSet = new Set<string>();
+    for (const item of failedExecutions) {
+      if (!item.createdAt || item.createdAt < since) continue;
+      if (this.pickFailureReason(item) !== normalizedReason) continue;
+      if (item.taskId) taskIdSet.add(item.taskId);
+    }
+
+    const taskIds = Array.from(taskIdSet);
+    return {
+      reason: normalizedReason,
+      timeRangeHours: safeHours,
+      taskIds,
+      total: taskIds.length,
+    };
+  }
+
   async diagnosePythonRunner(): Promise<{
     runnerUrl: string | null;
     hasAuthTokenConfigured: boolean;

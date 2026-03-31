@@ -96,6 +96,11 @@ export class QueryTestTaskDto extends PaginationDto {
   @IsString()
   projectId?: string;
 
+  @ApiPropertyOptional({ description: '任务ID列表（逗号分隔）' })
+  @IsOptional()
+  @IsString()
+  taskIds?: string;
+
   @ApiPropertyOptional({ enum: TaskStatus })
   @IsOptional()
   @IsEnum(TaskStatus)

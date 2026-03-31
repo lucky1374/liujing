@@ -51,6 +51,13 @@ export class TestTaskController {
     return this.executionService.getObservabilityOverview(hours ? Number(hours) : 24);
   }
 
+  @Get('observability/failure-reason-task-ids')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '按失败原因查询任务ID列表' })
+  getTaskIdsByFailureReason(@Query('reason') reason: string, @Query('hours') hours?: string) {
+    return this.executionService.getTaskIdsByFailureReason(reason, hours ? Number(hours) : 24);
+  }
+
   @Get(':id')
   @ApiOperation({ description: '获取任务详情' })
   findOne(@Param('id') id: string) {

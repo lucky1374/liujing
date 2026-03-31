@@ -28,10 +28,19 @@ export class TestTaskService {
   }
 
   async findAll(query: QueryTestTaskDto): Promise<{ list: TestTask[]; total: number }> {
-    const { page = 1, pageSize = 10, id, projectId, status, type, priority } = query;
+    const { page = 1, pageSize = 10, id, projectId, taskIds, status, type, priority } = query;
     const where: any = {};
 
     if (id) where.id = id;
+    if (!id && taskIds) {
+      const ids = taskIds
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (ids.length) {
+        where.id = In(ids);
+      }
+    }
     if (projectId) where.projectId = projectId;
     if (status) where.status = status;
     if (type) where.type = type;

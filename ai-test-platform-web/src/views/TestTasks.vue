@@ -49,7 +49,7 @@
         </div>
       </div>
       <div class="obs-reasons" v-if="observability.topFailureReasons.length">
-        <div class="obs-reason-item" v-for="item in observability.topFailureReasons" :key="item.reason">
+        <div class="obs-reason-item" v-for="item in observability.topFailureReasons" :key="item.reason" @click="applyGlobalFailureReasonFilter(item.reason)">
           <span>{{ item.reason }}</span>
           <el-tag type="danger">{{ item.count }}</el-tag>
         </div>
@@ -64,11 +64,15 @@
           </el-select>
         </el-form-item>
         <el-form-item label="任务状态">
-          <el-select v-model="queryForm.status" clearable placeholder="全部状态">
-            <el-option label="待执行" value="pending" />
-            <el-option label="执行中" value="running" />
-            <el-option label="已完成" value="completed" />
-            <el-option label="失败" value="failed" />
+          <el-radio-group v-model="queryForm.status" size="small" @change="handleStatusFilterChange">
+            <el-radio-button v-for="item in statusFilterOptions" :key="item.value" :label="item.value">
+              {{ item.label }}
+            </el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="失败原因">
+          <el-select v-model="globalFailureReasonFilter" clearable placeholder="执行记录筛选预设" style="width: 220px" @change="handleGlobalFailureReasonChange">
+            <el-option v-for="item in globalFailureReasonOptions" :key="item" :label="item" :value="item" />
           </el-select>
         </el-form-item>
         <el-form-item>
@@ -194,13 +198,23 @@
         show-icon
         style="margin-bottom: 12px"
       />
-      <el-table :data="executionList" border stripe>
+      <div class="execution-filter-row">
+        <el-select v-model="executionReasonFilter" clearable placeholder="按失败原因筛选" style="width: 260px">
+          <el-option v-for="item in executionReasonOptions" :key="item" :label="item" :value="item" />
+        </el-select>
+      </div>
+      <el-table :data="filteredExecutionList" border stripe>
         <el-table-column prop="scriptName" label="脚本名称" min-width="180" />
         <el-table-column prop="status" label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="executionStatusMap[row.status]?.type || 'info'">
               {{ executionStatusMap[row.status]?.label || row.status }}
             </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="失败原因" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ getExecutionReason(row) || '-' }}
           </template>
         </el-table-column>
         <el-table-column prop="responseStatus" label="响应码" width="100" />
@@ -339,6 +353,9 @@ const runnerDiag = ref(null)
 const runnerDiagLoading = ref(false)
 const runnerOverviewLoading = ref(false)
 const observabilityLoading = ref(false)
+const executionReasonFilter = ref('')
+const pendingGlobalReasonFilter = ref('')
+const globalFailureReasonFilter = ref('')
 const runnerOverview = ref({
   maxConcurrency: 0,
   running: 0,
@@ -406,6 +423,14 @@ const statusMap = {
   failed: { label: '失败', type: 'danger' },
   cancelled: { label: '已取消', type: 'warning' }
 }
+
+const statusFilterOptions = [
+  { label: '全部', value: '' },
+  { label: '待执行', value: 'pending' },
+  { label: '执行中', value: 'running' },
+  { label: '已完成', value: 'completed' },
+  { label: '失败', value: 'failed' }
+]
 
 const executionStatusMap = {
   passed: { label: '通过', type: 'success' },
@@ -505,22 +530,80 @@ const runnerOverviewItems = computed(() => [
   { label: '队列超时(ms)', value: runnerOverview.value.queueTimeoutMs || '-' }
 ])
 
+const executionReasonOptions = computed(() => {
+  const reasons = executionList.value
+    .filter((item) => item.status === 'failed')
+    .map((item) => getExecutionReason(item))
+    .filter(Boolean)
+  if (executionReasonFilter.value) {
+    reasons.push(executionReasonFilter.value)
+  }
+  return Array.from(new Set(reasons))
+})
+
+const filteredExecutionList = computed(() => {
+  if (!executionReasonFilter.value) return executionList.value
+  return executionList.value.filter((item) => getExecutionReason(item) === executionReasonFilter.value)
+})
+
+const globalFailureReasonOptions = computed(() => {
+  const fromOverview = (observability.value.topFailureReasons || []).map((item) => item.reason).filter(Boolean)
+  if (globalFailureReasonFilter.value) {
+    fromOverview.push(globalFailureReasonFilter.value)
+  }
+  return Array.from(new Set(fromOverview))
+})
+
 const loadProjects = async () => {
   const res = await api.get('/projects', { params: { page: 1, pageSize: 100 } })
   projects.value = res.data.list || []
 }
 
 const loadData = async () => {
+  let reasonTaskIds = null
+
+  if (globalFailureReasonFilter.value) {
+    const reasonRes = await api.get('/test-tasks/observability/failure-reason-task-ids', {
+      params: {
+        reason: globalFailureReasonFilter.value,
+        hours: observability.value.hours || 24
+      }
+    })
+    const taskIds = Array.isArray(reasonRes.data?.taskIds) ? reasonRes.data.taskIds : []
+    reasonTaskIds = taskIds
+
+    if (!reasonTaskIds.length) {
+      tableData.value = []
+      pagination.total = 0
+      return
+    }
+  }
+
   const params = {
     page: pagination.page,
     pageSize: pagination.pageSize,
     ...(queryForm.projectId && { projectId: queryForm.projectId }),
     ...(queryForm.taskId && { id: queryForm.taskId }),
-    ...(queryForm.status && { status: queryForm.status })
+    ...(reasonTaskIds?.length && { taskIds: reasonTaskIds.join(',') }),
+    ...((queryForm.status || globalFailureReasonFilter.value) && { status: queryForm.status || 'failed' })
   }
+
   const res = await api.get('/test-tasks', { params })
   tableData.value = res.data.list || []
   pagination.total = res.data.total || 0
+}
+
+const handleStatusFilterChange = async () => {
+  pagination.page = 1
+  await loadData()
+}
+
+const handleGlobalFailureReasonChange = async () => {
+  pagination.page = 1
+  if (globalFailureReasonFilter.value && !queryForm.status) {
+    queryForm.status = 'failed'
+  }
+  await loadData()
 }
 
 const loadProjectResources = async (projectId) => {
@@ -793,6 +876,11 @@ const copyText = async (text, successMessage) => {
 const handleViewExecutions = async (row) => {
   const res = await api.get(`/test-tasks/${row.id}/executions`)
   executionList.value = res.data || []
+  const presetReason = pendingGlobalReasonFilter.value || globalFailureReasonFilter.value
+  if (presetReason) {
+    executionReasonFilter.value = presetReason
+    pendingGlobalReasonFilter.value = ''
+  }
   executionDrawerTitle.value = `执行记录 - ${row.name}`
   executionDrawerVisible.value = true
 }
@@ -825,6 +913,15 @@ const handleDelete = async (row) => {
   await api.delete(`/test-tasks/${row.id}`)
   ElMessage.success('删除成功')
   loadData()
+}
+
+const applyGlobalFailureReasonFilter = async (reason) => {
+  globalFailureReasonFilter.value = reason
+  pendingGlobalReasonFilter.value = reason
+  queryForm.status = 'failed'
+  pagination.page = 1
+  await loadData()
+  ElMessage.success(`已按失败原因 ${reason} 预设筛选，请打开任务执行记录查看。`)
 }
 
 const normalizeQueryValue = (value) => {
@@ -986,6 +1083,23 @@ const formatRetryMeta = (execution) => {
   const policyText = meta.retryEligible === false ? ', 策略:非幂等禁重试' : ''
   return `尝试:${attempt}, 重试:${retryCount}, 本地兜底:${fallbackText}${reasonText}${policyText}`
 }
+
+const getExecutionReason = (execution) => {
+  if (!execution || execution.status !== 'failed') return ''
+
+  const body = execution.responseBody
+  const meta = body && typeof body === 'object' ? body._runnerMeta : null
+  if (meta?.lastHttpReason) return meta.lastHttpReason
+
+  const text = `${execution.errorMessage || ''} ${execution.errorStack || ''}`.toLowerCase()
+  if (text.includes('401') || text.includes('403') || text.includes('unauthorized')) return 'auth_failed'
+  if (text.includes('429') || text.includes('queue timeout')) return 'queue_timeout'
+  if (text.includes('timeout') || text.includes('timed out')) return 'runner_timeout'
+  if (text.includes('econnrefused') || text.includes('connect refused')) return 'runner_unreachable'
+  if (text.includes('enotfound') || text.includes('eai_again')) return 'runner_dns_error'
+  if (execution.runnerSource === 'python_local') return 'python_local_error'
+  return 'unknown'
+}
 </script>
 
 <style scoped>
@@ -1057,6 +1171,11 @@ const formatRetryMeta = (execution) => {
   align-items: center;
   justify-content: space-between;
   font-size: 13px;
+  cursor: pointer;
+}
+
+.execution-filter-row {
+  margin-bottom: 10px;
 }
 
 .diag-grid {
