@@ -12,6 +12,21 @@
       </div>
     </div>
 
+    <el-card class="runner-overview-card" v-loading="runnerOverviewLoading">
+      <template #header>
+        <div class="runner-overview-header">
+          <span>Runner实时状态</span>
+          <el-button size="small" @click="loadRunnerOverview">刷新</el-button>
+        </div>
+      </template>
+      <div class="runner-overview-grid">
+        <div v-for="item in runnerOverviewItems" :key="item.label" class="runner-overview-item">
+          <div class="runner-overview-label">{{ item.label }}</div>
+          <div class="runner-overview-value">{{ item.value }}</div>
+        </div>
+      </div>
+    </el-card>
+
     <el-card>
       <el-form :inline="true" :model="queryForm">
         <el-form-item label="所属项目">
@@ -170,6 +185,11 @@
         </el-table-column>
         <el-table-column prop="requestMethod" label="请求方式" width="110" />
         <el-table-column prop="requestUrl" label="请求地址" min-width="220" show-overflow-tooltip />
+        <el-table-column label="重试信息" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatRetryMeta(row) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="errorMessage" label="错误信息" min-width="220" show-overflow-tooltip />
         <el-table-column label="快速定位建议" min-width="260" show-overflow-tooltip>
           <template #default="{ row }">
@@ -202,6 +222,7 @@
           <el-descriptions-item label="响应码">{{ currentExecution.responseStatus || '-' }}</el-descriptions-item>
           <el-descriptions-item label="耗时(ms)">{{ currentExecution.durationMs }}</el-descriptions-item>
           <el-descriptions-item label="请求地址" :span="2">{{ currentExecution.requestUrl || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="重试信息" :span="2">{{ formatRetryMeta(currentExecution) }}</el-descriptions-item>
           <el-descriptions-item label="错误信息" :span="2">{{ currentExecution.errorMessage || '-' }}</el-descriptions-item>
           <el-descriptions-item label="快速定位建议" :span="2">{{ currentExecutionQuickTip || '-' }}</el-descriptions-item>
           <el-descriptions-item label="排查命令" :span="2">
@@ -248,6 +269,13 @@
             <div class="diag-desc">HTTP状态: {{ runnerDiag.executeProbe?.httpStatus || '-' }}</div>
             <div class="diag-desc">详情: {{ runnerDiag.executeProbe?.error || formatCompact(runnerDiag.executeProbe?.response) }}</div>
           </div>
+
+          <div class="diag-card" :class="runnerStatsState.type">
+            <div class="diag-title">Stats探测</div>
+            <div class="diag-status">{{ runnerStatsState.label }}</div>
+            <div class="diag-desc">HTTP状态: {{ runnerDiag.statsProbe?.httpStatus || '-' }}</div>
+            <div class="diag-desc">详情: {{ runnerDiag.statsProbe?.error || formatCompact(runnerDiag.statsProbe?.response) }}</div>
+          </div>
         </div>
       </template>
 
@@ -260,7 +288,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -280,6 +308,15 @@ const executionDrawerTitle = ref('执行记录')
 const currentExecution = ref(null)
 const runnerDiag = ref(null)
 const runnerDiagLoading = ref(false)
+const runnerOverviewLoading = ref(false)
+const runnerOverview = ref({
+  maxConcurrency: 0,
+  running: 0,
+  waiting: 0,
+  rejected: 0,
+  queueTimeoutMs: 0
+})
+let runnerOverviewTimer = null
 const projectStore = useProjectStore()
 const router = useRouter()
 const route = useRoute()
@@ -415,6 +452,22 @@ const runnerExecuteState = computed(() => {
   if (data.executeProbe.ok) return { type: 'diag-success', label: '通过' }
   return { type: 'diag-error', label: '失败' }
 })
+
+const runnerStatsState = computed(() => {
+  const data = runnerDiag.value
+  if (!data) return { type: 'diag-info', label: '待检查' }
+  if (!data.statsProbe) return { type: 'diag-warning', label: '未执行' }
+  if (data.statsProbe.ok) return { type: 'diag-success', label: '通过' }
+  return { type: 'diag-error', label: '失败' }
+})
+
+const runnerOverviewItems = computed(() => [
+  { label: '并发上限', value: runnerOverview.value.maxConcurrency || '-' },
+  { label: '执行中', value: runnerOverview.value.running || 0 },
+  { label: '排队中', value: runnerOverview.value.waiting || 0 },
+  { label: '排队拒绝', value: runnerOverview.value.rejected || 0 },
+  { label: '队列超时(ms)', value: runnerOverview.value.queueTimeoutMs || '-' }
+])
 
 const loadProjects = async () => {
   const res = await api.get('/projects', { params: { page: 1, pageSize: 100 } })
@@ -553,12 +606,53 @@ const handleDiagnoseRunner = async () => {
   try {
     const res = await api.get('/test-tasks/runner/diagnostics')
     runnerDiag.value = res.data || null
+    applyRunnerOverview(runnerDiag.value)
     runnerDiagVisible.value = true
   } catch (error) {
     ElMessage.error(error.response?.data?.message || 'Runner诊断失败')
   } finally {
     runnerDiagLoading.value = false
   }
+}
+
+const loadRunnerOverview = async (silent = false) => {
+  if (!silent) runnerOverviewLoading.value = true
+  try {
+    const res = await api.get('/test-tasks/runner/diagnostics')
+    applyRunnerOverview(res.data || null)
+  } catch {
+    // 静默轮询，不打扰正常页面操作
+  } finally {
+    if (!silent) runnerOverviewLoading.value = false
+  }
+}
+
+const applyRunnerOverview = (diag) => {
+  const limiter = parseLimiter(diag?.statsProbe?.response)
+  if (!limiter) return
+  runnerOverview.value = {
+    maxConcurrency: Number(limiter.maxConcurrency || 0),
+    running: Number(limiter.running || 0),
+    waiting: Number(limiter.waiting || 0),
+    rejected: Number(limiter.rejected || 0),
+    queueTimeoutMs: Number(limiter.queueTimeoutMs || 0)
+  }
+}
+
+const parseLimiter = (statsResponse) => {
+  if (!statsResponse) return null
+  if (typeof statsResponse === 'string') {
+    try {
+      const parsed = JSON.parse(statsResponse)
+      return parsed?.limiter || null
+    } catch {
+      return null
+    }
+  }
+  if (typeof statsResponse === 'object') {
+    return statsResponse.limiter || null
+  }
+  return null
 }
 
 const handleCopyRunnerDiag = async () => {
@@ -572,11 +666,13 @@ const buildRunnerDiagText = (data) => {
     '[Runner诊断结果]',
     `Runner URL: ${data.runnerUrl || '-'}`,
     `Token已配置: ${data.hasAuthTokenConfigured ? '是' : '否'}`,
-    `Health检查: ${data.health?.ok ? '通过' : '失败'}${data.health?.httpStatus ? ` (HTTP ${data.health.httpStatus})` : ''}`,
-    `Health详情: ${data.health?.error || formatCompact(data.health?.response)}`,
-    `Execute探测: ${data.executeProbe ? (data.executeProbe.ok ? '通过' : '失败') : '未执行'}${data.executeProbe?.httpStatus ? ` (HTTP ${data.executeProbe.httpStatus})` : ''}`,
-    `Execute详情: ${data.executeProbe?.error || formatCompact(data.executeProbe?.response)}`
-  ].join('\n')
+      `Health检查: ${data.health?.ok ? '通过' : '失败'}${data.health?.httpStatus ? ` (HTTP ${data.health.httpStatus})` : ''}`,
+      `Health详情: ${data.health?.error || formatCompact(data.health?.response)}`,
+      `Execute探测: ${data.executeProbe ? (data.executeProbe.ok ? '通过' : '失败') : '未执行'}${data.executeProbe?.httpStatus ? ` (HTTP ${data.executeProbe.httpStatus})` : ''}`,
+      `Execute详情: ${data.executeProbe?.error || formatCompact(data.executeProbe?.response)}`,
+      `Stats探测: ${data.statsProbe ? (data.statsProbe.ok ? '通过' : '失败') : '未执行'}${data.statsProbe?.httpStatus ? ` (HTTP ${data.statsProbe.httpStatus})` : ''}`,
+      `Stats详情: ${data.statsProbe?.error || formatCompact(data.statsProbe?.response)}`
+    ].join('\n')
 }
 
 const handleCopyExecutionCommands = async (execution) => {
@@ -694,6 +790,18 @@ onMounted(async () => {
     await loadProjectResources(projectStore.selectedProjectId)
   }
   await loadData()
+  await loadRunnerOverview()
+
+  runnerOverviewTimer = window.setInterval(() => {
+    loadRunnerOverview(true)
+  }, 10000)
+})
+
+onBeforeUnmount(() => {
+  if (runnerOverviewTimer) {
+    window.clearInterval(runnerOverviewTimer)
+    runnerOverviewTimer = null
+  }
 })
 
 watch(() => projectStore.selectedProjectId, async (projectId) => {
@@ -764,6 +872,11 @@ const getExecutionQuickTip = (execution) => {
   const errorMessage = String(execution.errorMessage || '')
   const errorStack = String(execution.errorStack || '')
   const fullText = `${errorMessage}\n${errorStack}`.toLowerCase()
+  const runnerMeta = execution.responseBody && typeof execution.responseBody === 'object' ? execution.responseBody._runnerMeta : null
+
+  if (runnerMeta?.lastHttpReason === 'queue_timeout' || fullText.includes('http 429') || fullText.includes('queue timeout')) {
+    return 'HTTP Runner 并发满载导致排队超时。可提高 RUNNER_MAX_CONCURRENCY 或 RUNNER_QUEUE_TIMEOUT_MS，并观察 /stats。'
+  }
 
   if (
     runnerSource === 'python_http' &&
@@ -802,12 +915,62 @@ const getExecutionQuickTip = (execution) => {
 
   return '请结合错误信息和堆栈排查脚本逻辑、环境变量与目标接口可用性。'
 }
+
+const formatRetryMeta = (execution) => {
+  if (!execution) return '-'
+
+  const body = execution.responseBody
+  const meta = body && typeof body === 'object' ? body._runnerMeta : null
+  if (!meta) return '-'
+
+  const attempt = `${meta.httpAttempt || 0}/${meta.maxAttempts || 0}`
+  const retryCount = meta.retryCount ?? 0
+  const fallbackText = meta.fallbackUsed ? '是' : '否'
+  const reasonText = meta.lastHttpReason ? `, 原因:${meta.lastHttpReason}` : ''
+  const policyText = meta.retryEligible === false ? ', 策略:非幂等禁重试' : ''
+  return `尝试:${attempt}, 重试:${retryCount}, 本地兜底:${fallbackText}${reasonText}${policyText}`
+}
 </script>
 
 <style scoped>
 .header-actions {
   display: flex;
   gap: 8px;
+}
+
+.runner-overview-card {
+  margin-bottom: 12px;
+}
+
+.runner-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.runner-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.runner-overview-item {
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fafafa;
+}
+
+.runner-overview-label {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 4px;
+}
+
+.runner-overview-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #303133;
 }
 
 .diag-grid {
@@ -868,8 +1031,12 @@ const getExecutionQuickTip = (execution) => {
 }
 
 @media (min-width: 900px) {
+  .runner-overview-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
   .diag-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 

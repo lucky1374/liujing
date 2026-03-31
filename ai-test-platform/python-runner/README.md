@@ -48,12 +48,15 @@ python runner/main.py --payload examples/sample_payload.json
 cd /Users/lj/liujing/ai-test-platform/python-runner
 source .venv/bin/activate
 export RUNNER_AUTH_TOKEN=change-me-runner-token
+export RUNNER_MAX_CONCURRENCY=2
+export RUNNER_QUEUE_TIMEOUT_MS=10000
 uvicorn runner.server:app --host 0.0.0.0 --port 8001
 ```
 
 可用接口：
 
 - `GET /health`
+- `GET /stats`（鉴权）
 - `POST /execute`
 
 ## Runner 鉴权
@@ -65,6 +68,25 @@ uvicorn runner.server:app --host 0.0.0.0 --port 8001
 
 如果未配置 `RUNNER_AUTH_TOKEN`，Runner 默认不校验。
 如果已配置，NestJS 侧也需要在 `.env` 中配置相同的 `RUNNER_AUTH_TOKEN`。
+
+## 并发与排队（最小版）
+
+新增环境变量：
+
+- `RUNNER_MAX_CONCURRENCY`：最大并发执行数，默认 `2`
+- `RUNNER_QUEUE_TIMEOUT_MS`：排队等待超时，默认 `10000`
+
+后端配套重试配置（`ai-test-platform/.env`）：
+
+- `RUNNER_HTTP_RETRY_COUNT`：HTTP Runner 重试次数，默认 `2`
+- `RUNNER_HTTP_RETRY_DELAY_MS`：重试间隔基数，默认 `500`
+- `RUNNER_HTTP_RETRY_IDEMPOTENT_ONLY`：仅幂等脚本允许重试，默认 `true`
+
+行为说明：
+
+- 当并发满载时，请求进入等待队列。
+- 若等待超时未拿到执行槽位，返回 `HTTP 429`。
+- `/health` 与 `/stats` 会返回当前并发/排队状态快照。
 
 ## Payload 说明
 

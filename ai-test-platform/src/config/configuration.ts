@@ -32,5 +32,8 @@ export default () => ({
   runner: {
     pythonRunnerUrl: process.env.PYTHON_RUNNER_URL || 'http://localhost:8001',
     authToken: process.env.RUNNER_AUTH_TOKEN || '',
+    httpRetryCount: parseInt(process.env.RUNNER_HTTP_RETRY_COUNT || '2', 10),
+    httpRetryDelayMs: parseInt(process.env.RUNNER_HTTP_RETRY_DELAY_MS || '500', 10),
+    httpRetryIdempotentOnly: String(process.env.RUNNER_HTTP_RETRY_IDEMPOTENT_ONLY || 'true').toLowerCase() === 'true',
   },
 });

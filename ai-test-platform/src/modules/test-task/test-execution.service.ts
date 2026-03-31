@@ -27,7 +27,21 @@ export interface TestResult {
   error?: string;
   errorStack?: string;
   response?: any;
+  executionMeta?: {
+    httpAttempt?: number;
+    maxAttempts?: number;
+    retryCount?: number;
+    fallbackUsed?: boolean;
+    flowState?: string;
+    lastHttpStatus?: number;
+    lastHttpCode?: string;
+    lastHttpReason?: string;
+    retryPolicy?: string;
+    retryEligible?: boolean;
+  };
 }
+
+type ExecutionFlowState = 'pending' | 'running_http' | 'retry_waiting' | 'running_local_fallback' | 'finished';
 
 @Injectable()
 export class TestExecutionService {
@@ -282,84 +296,244 @@ export class TestExecutionService {
     const payload = this.buildPythonRunnerPayload(script, task, environment);
     const runnerAuthToken = this.configService.get<string>('runner.authToken');
     const executeUrl = `${runnerUrl.replace(/\/$/, '')}/execute`;
+    const retryCount = Math.max(0, this.configService.get<number>('runner.httpRetryCount') ?? 2);
+    const retryDelayMs = Math.max(100, this.configService.get<number>('runner.httpRetryDelayMs') ?? 500);
+    const retryIdempotentOnly = this.configService.get<boolean>('runner.httpRetryIdempotentOnly') ?? true;
+    const canRetryByScript = !retryIdempotentOnly || this.isScriptIdempotentForRetry(script);
+    const maxAttempts = retryCount + 1;
+
+    this.logExecutionFlowState(
+      'pending',
+      task.id,
+      script.id,
+      `runnerUrl=${executeUrl}, maxAttempts=${maxAttempts}, retryIdempotentOnly=${retryIdempotentOnly}, canRetryByScript=${canRetryByScript}`,
+    );
 
     this.logger.log(
       `尝试调用 Python HTTP Runner: taskId=${task.id}, scriptId=${script.id}, url=${executeUrl}, timeoutMs=35000`,
     );
 
-    try {
-      const { data } = await axios.post(executeUrl, payload, {
-        timeout: 35000,
-        headers: runnerAuthToken
-          ? { 'X-Runner-Token': runnerAuthToken }
-          : undefined,
-      });
+    let lastError: unknown;
+    let attemptsUsed = 0;
 
-      this.logger.log(`Python HTTP Runner 调用成功: taskId=${task.id}, scriptId=${script.id}, url=${executeUrl}`);
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      attemptsUsed = attempt;
+      this.logExecutionFlowState('running_http', task.id, script.id, `attempt=${attempt}/${maxAttempts}`);
 
-      const result: TestResult = {
-        scriptId: script.id,
-        scriptName: script.name,
-        status: data.status === 'passed' ? 'passed' : 'failed',
-        duration: data.durationMs || Date.now() - startTime,
-        runnerSource: ExecutionRunnerSource.PYTHON_HTTP,
-        url: data.request?.url || environment?.baseUrl,
-        method: data.request?.method || 'PYTHON',
-        requestHeaders: data.request?.headers || environment?.headers || {},
-        requestBody: data.request?.body,
-        error: data.error || undefined,
-        errorStack: data.status === 'passed' ? undefined : (data.logs?.stderr || undefined),
-        response: data.response
-          ? {
-              status: data.response.status,
-              data: data.response.body,
-            }
-          : {
-              status: data.exitCode === 0 ? 200 : 500,
-              data: {
-                stdout: data.logs?.stdout,
-                stderr: data.logs?.stderr,
-                exitCode: data.exitCode,
-              },
-            },
-      };
+      try {
+        const { data } = await axios.post(executeUrl, payload, {
+          timeout: 35000,
+          headers: runnerAuthToken
+            ? { 'X-Runner-Token': runnerAuthToken }
+            : undefined,
+        });
 
-      await this.saveExecution(task, script, environment, result);
-      return result;
-    } catch (error) {
-      const axiosError = this.getAxiosError(error);
-      const status = axiosError?.response?.status;
+        this.logger.log(`Python HTTP Runner 调用成功: taskId=${task.id}, scriptId=${script.id}, url=${executeUrl}, attempt=${attempt}/${maxAttempts}`);
 
-      if (status === 401 || status === 403) {
         const result: TestResult = {
           scriptId: script.id,
           scriptName: script.name,
-          status: 'failed',
-          duration: Date.now() - startTime,
+          status: data.status === 'passed' ? 'passed' : 'failed',
+          duration: data.durationMs || Date.now() - startTime,
           runnerSource: ExecutionRunnerSource.PYTHON_HTTP,
-          url: environment?.baseUrl,
-          method: 'PYTHON',
-          requestHeaders: environment?.headers || {},
-          error: `Python HTTP Runner 鉴权失败: HTTP ${status}`,
-          errorStack: this.formatRunnerHttpError(error, task.id, script.id, executeUrl),
-          response: {
-            status,
-            data: axiosError?.response?.data,
+          url: data.request?.url || environment?.baseUrl,
+          method: data.request?.method || 'PYTHON',
+          requestHeaders: data.request?.headers || environment?.headers || {},
+          requestBody: data.request?.body,
+          error: data.error || undefined,
+          errorStack: data.status === 'passed'
+            ? undefined
+            : this.enrichWithAttemptMeta(data.logs?.stderr || '', attempt, maxAttempts),
+          response: data.response
+            ? {
+                status: data.response.status,
+                data: data.response.body,
+              }
+            : {
+                status: data.exitCode === 0 ? 200 : 500,
+                data: {
+                  stdout: data.logs?.stdout,
+                  stderr: data.logs?.stderr,
+                  exitCode: data.exitCode,
+                },
+              },
+          executionMeta: {
+            httpAttempt: attempt,
+            maxAttempts,
+            retryCount: attempt - 1,
+            fallbackUsed: false,
+            flowState: 'finished',
+            lastHttpReason: 'success',
+            retryPolicy: retryIdempotentOnly ? 'idempotent_only' : 'always',
+            retryEligible: canRetryByScript,
           },
         };
 
-        this.logger.error(
-          `Python HTTP Runner 鉴权失败，不执行本地回退: ${this.formatRunnerHttpError(error, task.id, script.id, executeUrl)}`,
-        );
+        this.logExecutionFlowState('finished', task.id, script.id, `source=python_http, status=${result.status}`);
         await this.saveExecution(task, script, environment, result);
         return result;
-      }
+      } catch (error) {
+        lastError = error;
+        const axiosError = this.getAxiosError(error);
+        const status = axiosError?.response?.status;
 
-      this.logger.warn(
-        `Python HTTP Runner 调用失败，回退到本地执行: ${this.formatRunnerHttpError(error, task.id, script.id, executeUrl)}`,
-      );
-      return this.executeByPythonRunnerLocal(script, task, environment, startTime);
+        if (status === 401 || status === 403) {
+          const result: TestResult = {
+            scriptId: script.id,
+            scriptName: script.name,
+            status: 'failed',
+            duration: Date.now() - startTime,
+            runnerSource: ExecutionRunnerSource.PYTHON_HTTP,
+            url: environment?.baseUrl,
+            method: 'PYTHON',
+            requestHeaders: environment?.headers || {},
+            error: `Python HTTP Runner 鉴权失败: HTTP ${status}`,
+            errorStack: this.enrichWithAttemptMeta(this.formatRunnerHttpError(error, task.id, script.id, executeUrl), attempt, maxAttempts),
+            response: {
+              status,
+              data: axiosError?.response?.data,
+            },
+            executionMeta: {
+              httpAttempt: attempt,
+              maxAttempts,
+              retryCount: attempt - 1,
+              fallbackUsed: false,
+              flowState: 'finished',
+              lastHttpStatus: status,
+              lastHttpCode: axiosError?.code,
+              lastHttpReason: 'auth_failed',
+              retryPolicy: retryIdempotentOnly ? 'idempotent_only' : 'always',
+              retryEligible: canRetryByScript,
+            },
+          };
+
+          this.logger.error(
+            `Python HTTP Runner 鉴权失败，不执行本地回退: ${this.formatRunnerHttpError(error, task.id, script.id, executeUrl)}`,
+          );
+          this.logExecutionFlowState('finished', task.id, script.id, 'source=python_http, status=failed, reason=auth');
+          await this.saveExecution(task, script, environment, result);
+          return result;
+        }
+
+        if (attempt < maxAttempts && canRetryByScript && this.isRetryableRunnerHttpError(error)) {
+          const waitMs = retryDelayMs * attempt;
+          const reason = this.classifyRunnerHttpReason(axiosError?.response?.status, axiosError?.code);
+          this.logExecutionFlowState('retry_waiting', task.id, script.id, `attempt=${attempt}/${maxAttempts}, waitMs=${waitMs}`);
+          this.logger.warn(
+            `Python HTTP Runner 第${attempt}次调用失败，将重试: reason=${reason}, ${this.formatRunnerHttpError(error, task.id, script.id, executeUrl)}`,
+          );
+          await this.sleep(waitMs);
+          continue;
+        }
+
+        if (attempt < maxAttempts && !canRetryByScript) {
+          this.logger.warn(
+            `Python HTTP Runner 调用失败，不进行重试（非幂等脚本保护）: taskId=${task.id}, scriptId=${script.id}, attempt=${attempt}/${maxAttempts}`,
+          );
+        }
+
+        break;
+      }
     }
+
+    this.logger.warn(
+      `Python HTTP Runner 调用失败，回退到本地执行: ${this.formatRunnerHttpError(lastError, task.id, script.id, executeUrl)}`,
+    );
+    this.logExecutionFlowState('running_local_fallback', task.id, script.id, `reason=runner_http_unavailable, attempts=${maxAttempts}`);
+    const lastAxiosError = this.getAxiosError(lastError);
+    const localResult = await this.executeByPythonRunnerLocal(script, task, environment, startTime);
+    localResult.executionMeta = {
+      ...(localResult.executionMeta || {}),
+      httpAttempt: attemptsUsed,
+      maxAttempts,
+      retryCount: Math.max(0, attemptsUsed - 1),
+      fallbackUsed: true,
+      flowState: 'finished',
+      lastHttpStatus: lastAxiosError?.response?.status,
+      lastHttpCode: lastAxiosError?.code,
+      lastHttpReason: this.classifyRunnerHttpReason(lastAxiosError?.response?.status, lastAxiosError?.code),
+      retryPolicy: retryIdempotentOnly ? 'idempotent_only' : 'always',
+      retryEligible: canRetryByScript,
+    };
+    this.logExecutionFlowState('finished', task.id, script.id, `source=python_local, status=${localResult.status}`);
+    return localResult;
+  }
+
+  private isRetryableRunnerHttpError(error: unknown): boolean {
+    const axiosError = this.getAxiosError(error);
+    if (!axiosError) return false;
+
+    const status = axiosError.response?.status;
+    const code = axiosError.code;
+
+    if (status === 429) return true;
+    if (status !== undefined && status >= 500) return true;
+
+    const retryableCodes = new Set([
+      'ECONNABORTED',
+      'ETIMEDOUT',
+      'ECONNRESET',
+      'ECONNREFUSED',
+      'EAI_AGAIN',
+      'ENOTFOUND',
+    ]);
+    if (code && retryableCodes.has(code)) return true;
+
+    return false;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private enrichWithAttemptMeta(content: string, attempt: number, maxAttempts: number): string {
+    const meta = `attempt=${attempt}/${maxAttempts}`;
+    if (!content) return meta;
+    return `${meta}, ${content}`;
+  }
+
+  private classifyRunnerHttpReason(status?: number, code?: string): string {
+    if (status === 429) return 'queue_timeout';
+    if (status === 401 || status === 403) return 'auth_failed';
+    if (status !== undefined && status >= 500) return 'runner_server_error';
+    if (code === 'ECONNREFUSED') return 'runner_unreachable';
+    if (code === 'ETIMEDOUT' || code === 'ECONNABORTED') return 'runner_timeout';
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'runner_dns_error';
+    if (code) return `network_${code.toLowerCase()}`;
+    return 'unknown';
+  }
+
+  private isScriptIdempotentForRetry(script: TestScript): boolean {
+    const content = (script.scriptContent || '').toLowerCase();
+    if (!content) return false;
+
+    const nonIdempotentPatterns = [
+      /requests\.(post|put|patch|delete)\s*\(/,
+      /\.(post|put|patch|delete)\s*\(/,
+      /method\s*=\s*['"](post|put|patch|delete)['"]/, 
+      /method\s*:\s*['"](post|put|patch|delete)['"]/, 
+    ];
+    if (nonIdempotentPatterns.some((pattern) => pattern.test(content))) {
+      return false;
+    }
+
+    const idempotentPatterns = [
+      /requests\.(get|head|options)\s*\(/,
+      /\.(get|head|options)\s*\(/,
+      /method\s*=\s*['"](get|head|options)['"]/, 
+      /method\s*:\s*['"](get|head|options)['"]/, 
+    ];
+    if (idempotentPatterns.some((pattern) => pattern.test(content))) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private logExecutionFlowState(state: ExecutionFlowState, taskId: string, scriptId: string, detail?: string): void {
+    this.logger.log(
+      `执行状态流转: taskId=${taskId}, scriptId=${scriptId}, state=${state}${detail ? `, ${detail}` : ''}`,
+    );
   }
 
   private getAxiosError(error: unknown): AxiosError | null {
@@ -535,6 +709,12 @@ export class TestExecutionService {
       response?: unknown;
       error?: string;
     };
+    statsProbe?: {
+      ok: boolean;
+      httpStatus?: number;
+      response?: unknown;
+      error?: string;
+    };
   }> {
     const runnerUrl = this.configService.get<string>('runner.pythonRunnerUrl') || null;
     const runnerAuthToken = this.configService.get<string>('runner.authToken') || '';
@@ -553,6 +733,7 @@ export class TestExecutionService {
     const baseUrl = runnerUrl.replace(/\/$/, '');
     const healthUrl = `${baseUrl}/health`;
     const executeUrl = `${baseUrl}/execute`;
+    const statsUrl = `${baseUrl}/stats`;
 
     try {
       const healthResponse = await axios.get(healthUrl, {
@@ -570,6 +751,12 @@ export class TestExecutionService {
           error?: string;
         };
         executeProbe?: {
+          ok: boolean;
+          httpStatus?: number;
+          response?: unknown;
+          error?: string;
+        };
+        statsProbe?: {
           ok: boolean;
           httpStatus?: number;
           response?: unknown;
@@ -629,6 +816,24 @@ export class TestExecutionService {
         result.executeProbe.error = `Runner /execute 调用失败: HTTP ${executeResponse.status}`;
       }
 
+      const statsResponse = await axios.get(statsUrl, {
+        timeout: 5000,
+        validateStatus: () => true,
+        headers: runnerAuthToken
+          ? { 'X-Runner-Token': runnerAuthToken }
+          : undefined,
+      });
+
+      result.statsProbe = {
+        ok: statsResponse.status >= 200 && statsResponse.status < 300,
+        httpStatus: statsResponse.status,
+        response: statsResponse.data,
+      };
+
+      if (!result.statsProbe.ok) {
+        result.statsProbe.error = `Runner /stats 调用失败: HTTP ${statsResponse.status}`;
+      }
+
       return result;
     } catch (error) {
       const message = this.formatRunnerHttpError(error, 'runner-diagnostics', 'runner-diagnostics', healthUrl);
@@ -644,6 +849,8 @@ export class TestExecutionService {
   }
 
   private async saveExecution(task: TestTask, script: TestScript, environment: Environment | null, result: TestResult) {
+    const responseBodyWithMeta = this.attachExecutionMeta(result.response?.data, result.executionMeta);
+
     const execution = this.executionRepository.create({
       projectId: task.projectId,
       taskId: task.id,
@@ -659,7 +866,7 @@ export class TestExecutionService {
       requestHeaders: result.requestHeaders,
       requestBody: result.requestBody,
       responseStatus: result.response?.status,
-      responseBody: result.response?.data,
+      responseBody: responseBodyWithMeta,
       errorMessage: result.error,
       errorStack: result.errorStack,
       errorType: this.mapErrorType(result) ?? undefined,
@@ -669,6 +876,22 @@ export class TestExecutionService {
     });
 
     await this.executionRepository.save(execution);
+  }
+
+  private attachExecutionMeta(responseData: unknown, executionMeta?: TestResult['executionMeta']): any {
+    if (!executionMeta) return responseData;
+
+    if (responseData && typeof responseData === 'object' && !Array.isArray(responseData)) {
+      return {
+        ...(responseData as Record<string, any>),
+        _runnerMeta: executionMeta,
+      };
+    }
+
+    return {
+      _runnerData: responseData,
+      _runnerMeta: executionMeta,
+    };
   }
 
   private mapExecutionStatus(status: TestResult['status']): ExecutionStatus {
