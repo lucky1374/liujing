@@ -57,8 +57,8 @@
       </div>
       <div class="obs-reasons" v-if="observability.topFailureReasons.length">
         <div class="obs-reason-item" v-for="item in observability.topFailureReasons" :key="item.reason" @click="applyGlobalFailureReasonFilter(item.reason)">
-          <span>{{ item.reason }}</span>
-          <el-tag type="danger">{{ item.count }}</el-tag>
+          <span>{{ getFailureReasonLabel(item.reason) }}</span>
+          <el-tag :type="getFailureReasonTagType(item.reason)">{{ item.count }}</el-tag>
         </div>
       </div>
     </el-card>
@@ -79,7 +79,7 @@
         </el-form-item>
         <el-form-item label="失败原因">
           <el-select v-model="globalFailureReasonFilter" clearable placeholder="执行记录筛选预设" style="width: 220px" @change="handleGlobalFailureReasonChange">
-            <el-option v-for="item in globalFailureReasonOptions" :key="item" :label="item" :value="item" />
+            <el-option v-for="item in globalFailureReasonOptions" :key="item" :label="getFailureReasonLabel(item)" :value="item" />
           </el-select>
         </el-form-item>
         <el-form-item>
@@ -207,7 +207,7 @@
       />
       <div class="execution-filter-row">
         <el-select v-model="executionReasonFilter" clearable placeholder="按失败原因筛选" style="width: 260px">
-          <el-option v-for="item in executionReasonOptions" :key="item" :label="item" :value="item" />
+          <el-option v-for="item in executionReasonOptions" :key="item" :label="getFailureReasonLabel(item)" :value="item" />
         </el-select>
       </div>
       <el-table :data="filteredExecutionList" border stripe>
@@ -221,7 +221,7 @@
         </el-table-column>
         <el-table-column label="失败原因" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">
-            {{ getExecutionReason(row) || '-' }}
+            {{ getFailureReasonLabel(getExecutionReason(row)) || '-' }}
           </template>
         </el-table-column>
         <el-table-column prop="responseStatus" label="响应码" width="100" />
@@ -444,6 +444,17 @@ const observabilityRangeOptions = [
   { label: '近24小时', value: 24 },
   { label: '近7天', value: 168 }
 ]
+
+const failureReasonMap = {
+  queue_timeout: { label: '队列超时', tagType: 'danger' },
+  auth_failed: { label: '鉴权失败', tagType: 'danger' },
+  runner_timeout: { label: 'Runner超时', tagType: 'warning' },
+  runner_unreachable: { label: 'Runner不可达', tagType: 'warning' },
+  runner_dns_error: { label: 'Runner域名异常', tagType: 'warning' },
+  runner_server_error: { label: 'Runner服务异常', tagType: 'danger' },
+  python_local_error: { label: '本地兜底异常', tagType: 'info' },
+  unknown: { label: '未知原因', tagType: 'info' }
+}
 
 const executionStatusMap = {
   passed: { label: '通过', type: 'success' },
@@ -947,7 +958,7 @@ const applyGlobalFailureReasonFilter = async (reason) => {
   queryForm.status = 'failed'
   pagination.page = 1
   await loadData()
-  ElMessage.success(`已按失败原因 ${reason} 预设筛选，请打开任务执行记录查看。`)
+  ElMessage.success(`已按失败原因 ${getFailureReasonLabel(reason)} 预设筛选，请打开任务执行记录查看。`)
 }
 
 const normalizeQueryValue = (value) => {
@@ -1108,6 +1119,16 @@ const formatRetryMeta = (execution) => {
   const reasonText = meta.lastHttpReason ? `, 原因:${meta.lastHttpReason}` : ''
   const policyText = meta.retryEligible === false ? ', 策略:非幂等禁重试' : ''
   return `尝试:${attempt}, 重试:${retryCount}, 本地兜底:${fallbackText}${reasonText}${policyText}`
+}
+
+const getFailureReasonLabel = (reason) => {
+  if (!reason) return ''
+  return failureReasonMap[reason]?.label || reason
+}
+
+const getFailureReasonTagType = (reason) => {
+  if (!reason) return 'info'
+  return failureReasonMap[reason]?.tagType || 'info'
 }
 
 const getExecutionReason = (execution) => {
