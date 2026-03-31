@@ -188,6 +188,14 @@
         <el-form-item label="任务描述">
           <el-input v-model="form.description" type="textarea" :rows="4" />
         </el-form-item>
+        <el-form-item label="任务回调类型">
+          <el-select v-model="form.triggerType" clearable placeholder="不启用回调" style="width: 100%">
+            <el-option label="Webhook回调" value="webhook" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="form.triggerType === 'webhook'" label="任务回调地址">
+          <el-input v-model="form.triggerUrl" placeholder="https://example.com/webhook/task-callback" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -402,7 +410,9 @@ const form = reactive({
   environmentId: '',
   scriptIds: [],
   priority: 'medium',
-  scheduledTime: ''
+  scheduledTime: '',
+  triggerType: '',
+  triggerUrl: ''
 })
 
 const rules = {
@@ -674,7 +684,9 @@ const resetForm = () => {
     environmentId: '',
     scriptIds: [],
     priority: 'medium',
-    scheduledTime: ''
+    scheduledTime: '',
+    triggerType: '',
+    triggerUrl: ''
   })
 }
 
@@ -699,7 +711,9 @@ const handleEdit = async (row) => {
     environmentId: row.environmentId || '',
     scriptIds: row.scriptIds || [],
     priority: row.priority || 'medium',
-    scheduledTime: row.scheduledTime || ''
+    scheduledTime: row.scheduledTime || '',
+    triggerType: row.triggerType || '',
+    triggerUrl: row.triggerUrl || ''
   })
   await loadProjectResources(form.projectId)
   dialogTitle.value = '编辑任务'
@@ -709,6 +723,11 @@ const handleEdit = async (row) => {
 const handleSave = async () => {
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
+
+  if (form.triggerType === 'webhook' && !form.triggerUrl) {
+    ElMessage.error('请选择任务回调地址')
+    return
+  }
 
   const payload = {
     projectId: form.projectId,
@@ -720,7 +739,9 @@ const handleSave = async () => {
     environmentId: form.environmentId || undefined,
     scriptIds: form.scriptIds,
     priority: form.priority,
-    scheduledTime: form.executeType === 'scheduled' ? form.scheduledTime : undefined
+    scheduledTime: form.executeType === 'scheduled' ? form.scheduledTime : undefined,
+    triggerType: form.triggerType || undefined,
+    triggerUrl: form.triggerType === 'webhook' ? (form.triggerUrl || undefined) : undefined
   }
 
   saveLoading.value = true
@@ -911,7 +932,9 @@ const copyText = async (text, successMessage) => {
 }
 
 const handleViewExecutions = async (row) => {
-  const res = await api.get(`/test-tasks/${row.id}/executions`)
+  const res = await api.get(`/test-tasks/${row.id}/executions`, {
+    params: { _t: Date.now() }
+  })
   executionList.value = res.data || []
   const presetReason = pendingGlobalReasonFilter.value || globalFailureReasonFilter.value
   if (presetReason) {
@@ -1123,20 +1146,44 @@ const formatRetryMeta = (execution) => {
 
 const getFailureReasonLabel = (reason) => {
   if (!reason) return ''
+  if (String(reason).startsWith('http_')) {
+    const status = String(reason).replace('http_', '')
+    return `HTTP ${status}`
+  }
   return failureReasonMap[reason]?.label || reason
 }
 
 const getFailureReasonTagType = (reason) => {
   if (!reason) return 'info'
+  if (String(reason).startsWith('http_')) {
+    const status = Number(String(reason).replace('http_', ''))
+    return status >= 500 ? 'danger' : 'warning'
+  }
   return failureReasonMap[reason]?.tagType || 'info'
 }
 
 const getExecutionReason = (execution) => {
   if (!execution || execution.status !== 'failed') return ''
 
-  const body = execution.responseBody
+  if (execution.failureReason) {
+    return execution.failureReason
+  }
+
+  let body = execution.responseBody
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body)
+    } catch {
+      body = null
+    }
+  }
   const meta = body && typeof body === 'object' ? body._runnerMeta : null
   if (meta?.lastHttpReason) return meta.lastHttpReason
+
+  const responseStatus = Number(execution.responseStatus)
+  if (Number.isFinite(responseStatus) && responseStatus >= 400) {
+    return `http_${responseStatus}`
+  }
 
   const text = `${execution.errorMessage || ''} ${execution.errorStack || ''}`.toLowerCase()
   if (text.includes('401') || text.includes('403') || text.includes('unauthorized')) return 'auth_failed'

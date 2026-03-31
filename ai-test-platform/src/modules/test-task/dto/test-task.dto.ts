@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsEnum, IsArray, IsDateString, IsUUID } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsArray, IsDateString, IsUUID, IsUrl } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { TaskType, TaskStatus, TaskPriority, ExecuteType, ExecuteEnvironment } from '../entities/test-task.entity';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
@@ -50,9 +50,24 @@ export class CreateTestTaskDto {
   @IsOptional()
   @IsDateString()
   scheduledTime?: string;
+
+  @ApiPropertyOptional({ description: '触发类型（如 webhook）' })
+  @IsOptional()
+  @IsString()
+  triggerType?: string;
+
+  @ApiPropertyOptional({ description: '回调地址（triggerType=webhook 时生效）' })
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  triggerUrl?: string;
 }
 
 export class UpdateTestTaskDto {
+  @ApiPropertyOptional({ description: '项目ID' })
+  @IsOptional()
+  @IsString()
+  projectId?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -67,6 +82,31 @@ export class UpdateTestTaskDto {
   @IsOptional()
   @IsEnum(TaskStatus)
   status?: TaskStatus;
+
+  @ApiPropertyOptional({ enum: TaskType })
+  @IsOptional()
+  @IsEnum(TaskType)
+  type?: TaskType;
+
+  @ApiPropertyOptional({ enum: ExecuteType })
+  @IsOptional()
+  @IsEnum(ExecuteType)
+  executeType?: ExecuteType;
+
+  @ApiPropertyOptional({ enum: ExecuteEnvironment, isArray: true })
+  @IsOptional()
+  @IsArray()
+  executeEnvironments?: ExecuteEnvironment[];
+
+  @ApiPropertyOptional({ enum: TaskPriority })
+  @IsOptional()
+  @IsEnum(TaskPriority)
+  priority?: TaskPriority;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsDateString()
+  scheduledTime?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -83,6 +123,16 @@ export class UpdateTestTaskDto {
   @IsArray()
   @IsUUID('4', { each: true })
   scriptIds?: string[];
+
+  @ApiPropertyOptional({ description: '触发类型（如 webhook）' })
+  @IsOptional()
+  @IsString()
+  triggerType?: string;
+
+  @ApiPropertyOptional({ description: '回调地址（triggerType=webhook 时生效）' })
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  triggerUrl?: string;
 }
 
 export class QueryTestTaskDto extends PaginationDto {

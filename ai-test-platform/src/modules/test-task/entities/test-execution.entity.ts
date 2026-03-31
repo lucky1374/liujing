@@ -45,6 +45,9 @@ export class TestExecution {
   @Column({ unique: true })
   executionNo: string;
 
+  @Column({ nullable: true })
+  batchNo: string;
+
   @Column({ type: 'enum', enum: ExecutionStatus, default: ExecutionStatus.PENDING })
   status: ExecutionStatus;
 

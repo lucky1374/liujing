@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { In, Repository } from 'typeorm';
+import { Between, In, Repository } from 'typeorm';
 import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
@@ -69,19 +69,25 @@ export class TestExecutionService {
       throw new Error('任务不存在');
     }
 
-    await this.taskRepository.update(taskId, { 
+    const startAt = new Date();
+    await this.taskRepository.update(taskId, {
       status: TaskStatus.RUNNING,
-      startTime: new Date()
+      startTime: startAt,
     });
+    task.status = TaskStatus.RUNNING;
+    task.startTime = startAt;
 
     const results: TestResult[] = [];
+    const batchNo = `BATCH-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let finalStatus: TaskStatus = TaskStatus.COMPLETED;
+    let taskError: string | undefined;
     
     try {
       const scripts = await this.getTaskScripts(task);
       const targetEnvironment = await this.resolveEnvironment(task, environment, environmentId);
       
       for (const script of scripts) {
-        const result = await this.executeScript(script, task, targetEnvironment);
+        const result = await this.executeScript(script, task, targetEnvironment, batchNo);
         results.push(result);
       }
 
@@ -89,24 +95,103 @@ export class TestExecutionService {
       const failedCount = results.filter(r => r.status === 'failed').length;
       const passRate = scripts.length > 0 ? (passedCount / scripts.length) * 100 : 0;
 
+      finalStatus = failedCount > 0 ? TaskStatus.FAILED : TaskStatus.COMPLETED;
+      const endAt = new Date();
       await this.taskRepository.update(taskId, {
-        status: failedCount > 0 ? TaskStatus.FAILED : TaskStatus.COMPLETED,
-        endTime: new Date(),
+        status: finalStatus,
+        endTime: endAt,
         passedCases: passedCount,
         failedCases: failedCount,
         passRate: Math.round(passRate * 100) / 100,
-        totalCases: scripts.length
+        totalCases: scripts.length,
       });
+      task.status = finalStatus;
+      task.endTime = endAt;
+      task.passedCases = passedCount;
+      task.failedCases = failedCount;
+      task.totalCases = scripts.length;
+      task.passRate = Math.round(passRate * 100) / 100;
 
     } catch (error) {
       this.logger.error(`任务执行失败: ${error.message}`);
+      finalStatus = TaskStatus.FAILED;
+      taskError = error.message;
+      const endAt = new Date();
       await this.taskRepository.update(taskId, {
         status: TaskStatus.FAILED,
-        endTime: new Date()
+        endTime: endAt,
       });
+      task.status = TaskStatus.FAILED;
+      task.endTime = endAt;
+    } finally {
+      await this.notifyTaskCallback(task, finalStatus, results, taskError);
     }
 
     return results;
+  }
+
+  private async notifyTaskCallback(task: TestTask, finalStatus: TaskStatus, results: TestResult[], taskError?: string): Promise<void> {
+    const triggerType = (task.triggerType || '').toLowerCase();
+    const triggerUrl = task.triggerUrl;
+
+    if (!triggerUrl || (triggerType && triggerType !== 'webhook')) {
+      return;
+    }
+
+    const timeoutMs = Math.max(1000, this.configService.get<number>('taskCallback.timeoutMs') ?? 5000);
+    const retryCount = Math.max(0, this.configService.get<number>('taskCallback.retryCount') ?? 2);
+    const retryDelayMs = Math.max(200, this.configService.get<number>('taskCallback.retryDelayMs') ?? 1000);
+    const maxAttempts = retryCount + 1;
+
+    const payload = {
+      event: 'task.execution.completed',
+      task: {
+        id: task.id,
+        name: task.name,
+        projectId: task.projectId,
+        status: finalStatus,
+        startTime: task.startTime,
+        endTime: task.endTime,
+        totalCases: task.totalCases || results.length,
+        passedCases: task.passedCases || results.filter((item) => item.status === 'passed').length,
+        failedCases: task.failedCases || results.filter((item) => item.status === 'failed').length,
+        passRate: Number(task.passRate || 0),
+      },
+      error: taskError,
+      results: results.map((item) => ({
+        scriptId: item.scriptId,
+        scriptName: item.scriptName,
+        status: item.status,
+        runnerSource: item.runnerSource,
+        duration: item.duration,
+        error: item.error,
+      })),
+      sentAt: new Date().toISOString(),
+    };
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await axios.post(triggerUrl, payload, {
+          timeout: timeoutMs,
+          headers: { 'Content-Type': 'application/json' },
+        });
+        this.logger.log(`任务回调成功: taskId=${task.id}, url=${triggerUrl}, attempt=${attempt}/${maxAttempts}`);
+        return;
+      } catch (error) {
+        const detail = this.toLogPreview((error as Error)?.message || error);
+        if (attempt >= maxAttempts) {
+          this.logger.error(
+            `任务回调失败（已重试结束）: taskId=${task.id}, url=${triggerUrl}, attempt=${attempt}/${maxAttempts}, error=${detail}`,
+          );
+          return;
+        }
+
+        this.logger.warn(
+          `任务回调失败，将重试: taskId=${task.id}, url=${triggerUrl}, attempt=${attempt}/${maxAttempts}, error=${detail}`,
+        );
+        await this.sleep(retryDelayMs * attempt);
+      }
+    }
   }
 
   private async getTaskScripts(task: TestTask): Promise<TestScript[]> {
@@ -118,7 +203,7 @@ export class TestExecutionService {
       return this.scriptRepository.find({ where: { projectId: task.projectId } });
     }
 
-    return this.scriptRepository.find();
+    throw new Error('任务未配置关联脚本，且未指定项目，已阻止全库脚本执行');
   }
 
   private async resolveEnvironment(task: TestTask, environment?: string, environmentId?: string): Promise<Environment | null> {
@@ -143,16 +228,16 @@ export class TestExecutionService {
     return null;
   }
 
-  private async executeScript(script: TestScript, task: TestTask, environment: Environment | null): Promise<TestResult> {
+  private async executeScript(script: TestScript, task: TestTask, environment: Environment | null, batchNo: string): Promise<TestResult> {
     const startTime = Date.now();
     
     try {
       if (script.executionMode === ScriptExecutionMode.PYTHON) {
-        return await this.executeByPythonRunner(script, task, environment, startTime);
+        return await this.executeByPythonRunner(script, task, environment, startTime, batchNo);
       }
 
       if (script.type === 'interface') {
-        return await this.executeInterfaceScript(script, task, environment, startTime);
+        return await this.executeInterfaceScript(script, task, environment, startTime, batchNo);
       } else {
         const result: TestResult = {
           scriptId: script.id,
@@ -161,7 +246,7 @@ export class TestExecutionService {
           duration: Date.now() - startTime,
           error: '暂不支持UI测试执行'
         };
-        await this.saveExecution(task, script, environment, result);
+        await this.saveExecution(task, script, environment, result, batchNo);
         return result;
       }
     } catch (error) {
@@ -173,12 +258,12 @@ export class TestExecutionService {
           error: error.message,
           errorStack: error.stack
         };
-      await this.saveExecution(task, script, environment, result);
+      await this.saveExecution(task, script, environment, result, batchNo);
       return result;
     }
   }
 
-  private async executeInterfaceScript(script: TestScript, task: TestTask, environment: Environment | null, startTime: number): Promise<TestResult> {
+  private async executeInterfaceScript(script: TestScript, task: TestTask, environment: Environment | null, startTime: number, batchNo: string): Promise<TestResult> {
     try {
       let scriptContent = script.scriptContent;
 
@@ -224,7 +309,7 @@ export class TestExecutionService {
           },
           error: isPassed ? undefined : `HTTP ${response.status}`
         };
-        await this.saveExecution(task, script, environment, result);
+        await this.saveExecution(task, script, environment, result, batchNo);
         return result;
       }
 
@@ -265,7 +350,7 @@ export class TestExecutionService {
         },
         error: isPassed ? undefined : `HTTP ${response.status}`
       };
-      await this.saveExecution(task, script, environment, result);
+      await this.saveExecution(task, script, environment, result, batchNo);
       return result;
 
     } catch (error) {
@@ -277,22 +362,22 @@ export class TestExecutionService {
         error: error.message,
         errorStack: error.stack
       };
-      await this.saveExecution(task, script, environment, result);
+      await this.saveExecution(task, script, environment, result, batchNo);
       return result;
     }
   }
 
-  private async executeByPythonRunner(script: TestScript, task: TestTask, environment: Environment | null, startTime: number): Promise<TestResult> {
+  private async executeByPythonRunner(script: TestScript, task: TestTask, environment: Environment | null, startTime: number, batchNo: string): Promise<TestResult> {
     const runnerUrl = this.configService.get<string>('runner.pythonRunnerUrl');
 
     if (runnerUrl) {
-      return this.executeByPythonRunnerHttp(runnerUrl, script, task, environment, startTime);
+      return this.executeByPythonRunnerHttp(runnerUrl, script, task, environment, startTime, batchNo);
     }
 
-    return this.executeByPythonRunnerLocal(script, task, environment, startTime);
+    return this.executeByPythonRunnerLocal(script, task, environment, startTime, batchNo);
   }
 
-  private async executeByPythonRunnerHttp(runnerUrl: string, script: TestScript, task: TestTask, environment: Environment | null, startTime: number): Promise<TestResult> {
+  private async executeByPythonRunnerHttp(runnerUrl: string, script: TestScript, task: TestTask, environment: Environment | null, startTime: number, batchNo: string): Promise<TestResult> {
     const payload = this.buildPythonRunnerPayload(script, task, environment);
     const runnerAuthToken = this.configService.get<string>('runner.authToken');
     const executeUrl = `${runnerUrl.replace(/\/$/, '')}/execute`;
@@ -370,7 +455,7 @@ export class TestExecutionService {
         };
 
         this.logExecutionFlowState('finished', task.id, script.id, `source=python_http, status=${result.status}`);
-        await this.saveExecution(task, script, environment, result);
+        await this.saveExecution(task, script, environment, result, batchNo);
         return result;
       } catch (error) {
         lastError = error;
@@ -411,7 +496,7 @@ export class TestExecutionService {
             `Python HTTP Runner 鉴权失败，不执行本地回退: ${this.formatRunnerHttpError(error, task.id, script.id, executeUrl)}`,
           );
           this.logExecutionFlowState('finished', task.id, script.id, 'source=python_http, status=failed, reason=auth');
-          await this.saveExecution(task, script, environment, result);
+          await this.saveExecution(task, script, environment, result, batchNo);
           return result;
         }
 
@@ -441,7 +526,7 @@ export class TestExecutionService {
     );
     this.logExecutionFlowState('running_local_fallback', task.id, script.id, `reason=runner_http_unavailable, attempts=${maxAttempts}`);
     const lastAxiosError = this.getAxiosError(lastError);
-    const localResult = await this.executeByPythonRunnerLocal(script, task, environment, startTime);
+    const localResult = await this.executeByPythonRunnerLocal(script, task, environment, startTime, batchNo);
     localResult.executionMeta = {
       ...(localResult.executionMeta || {}),
       httpAttempt: attemptsUsed,
@@ -591,7 +676,7 @@ export class TestExecutionService {
     }
   }
 
-  private async executeByPythonRunnerLocal(script: TestScript, task: TestTask, environment: Environment | null, startTime: number): Promise<TestResult> {
+  private async executeByPythonRunnerLocal(script: TestScript, task: TestTask, environment: Environment | null, startTime: number, batchNo: string): Promise<TestResult> {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-test-python-runner-'));
     const payloadPath = path.join(tempDir, 'payload.json');
     const runnerEntry = path.resolve(process.cwd(), 'python-runner/runner/main.py');
@@ -637,7 +722,7 @@ export class TestExecutionService {
             },
       };
 
-      await this.saveExecution(task, script, environment, result);
+      await this.saveExecution(task, script, environment, result, batchNo);
       return result;
     } catch (error) {
       const output = error.stdout || error.stderr;
@@ -676,18 +761,44 @@ export class TestExecutionService {
           : undefined,
       };
 
-      await this.saveExecution(task, script, environment, result);
+      await this.saveExecution(task, script, environment, result, batchNo);
       return result;
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   }
 
-  async findExecutions(taskId: string): Promise<TestExecution[]> {
-    return this.executionRepository.find({
-      where: { taskId },
+  async findExecutions(taskId: string, options?: { all?: boolean; batchNo?: string }): Promise<Array<TestExecution & { failureReason?: string }>> {
+    const where: Record<string, any> = { taskId };
+
+    if (options?.batchNo) {
+      where.batchNo = options.batchNo;
+    } else if (!options?.all) {
+      const latest = await this.executionRepository.findOne({
+        where: { taskId },
+        order: { createdAt: 'DESC' },
+      });
+      if (latest?.batchNo) {
+        where.batchNo = latest.batchNo;
+      } else {
+        const task = await this.taskRepository.findOne({ where: { id: taskId } });
+        if (task?.startTime && task?.endTime) {
+          const startWindow = new Date(task.startTime.getTime() - 5000);
+          const endWindow = new Date(task.endTime.getTime() + 5000);
+          where.startedAt = Between(startWindow, endWindow);
+        }
+      }
+    }
+
+    const list = await this.executionRepository.find({
+      where,
       order: { createdAt: 'DESC' },
     });
+
+    return list.map((item) => ({
+      ...item,
+      failureReason: item.status === ExecutionStatus.FAILED ? this.pickFailureReason(item) : undefined,
+    }));
   }
 
   async findExecutionById(id: string): Promise<TestExecution | null> {
@@ -926,7 +1037,7 @@ export class TestExecutionService {
     }
   }
 
-  private async saveExecution(task: TestTask, script: TestScript, environment: Environment | null, result: TestResult) {
+  private async saveExecution(task: TestTask, script: TestScript, environment: Environment | null, result: TestResult, batchNo?: string) {
     const responseBodyWithMeta = this.attachExecutionMeta(result.response?.data, result.executionMeta);
 
     const execution = this.executionRepository.create({
@@ -936,6 +1047,7 @@ export class TestExecutionService {
       scriptId: script.id,
       caseId: script.caseId,
       executionNo: `EXE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      batchNo: batchNo || undefined,
       status: this.mapExecutionStatus(result.status),
       scriptName: script.name,
       requestUrl: result.url,
@@ -976,6 +1088,11 @@ export class TestExecutionService {
     const body = execution.responseBody as any;
     const reason = body?._runnerMeta?.lastHttpReason;
     if (typeof reason === 'string' && reason) return reason;
+
+    const responseStatus = Number(execution.responseStatus);
+    if (Number.isFinite(responseStatus) && responseStatus >= 400) {
+      return `http_${responseStatus}`;
+    }
 
     const error = (execution.errorMessage || '').toLowerCase();
     if (error.includes('401') || error.includes('403') || error.includes('unauthorized')) return 'auth_failed';

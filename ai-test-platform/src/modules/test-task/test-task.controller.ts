@@ -80,8 +80,11 @@ export class TestTaskController {
 
   @Get(':id/executions')
   @ApiOperation({ description: '获取任务执行记录' })
-  findExecutions(@Param('id') id: string) {
-    return this.executionService.findExecutions(id);
+  findExecutions(@Param('id') id: string, @Query('all') all?: string, @Query('batchNo') batchNo?: string) {
+    return this.executionService.findExecutions(id, {
+      all: String(all).toLowerCase() === 'true',
+      batchNo,
+    });
   }
 
   @Delete(':id')
