@@ -375,6 +375,8 @@ export class TestExecutionService {
     projectId?: string;
     unreadOnly?: boolean;
     type?: string;
+    from?: string;
+    to?: string;
   }): Promise<{ list: AlertNotification[]; total: number; unread: number; page: number; pageSize: number }> {
     const page = Math.max(1, Number(query?.page || 1));
     const pageSize = Math.min(Math.max(1, Number(query?.pageSize || 20)), 100);
@@ -388,6 +390,18 @@ export class TestExecutionService {
     }
     if (query?.type && [AlertNotificationType.CALLBACK_RISK, AlertNotificationType.CALLBACK_RECOVERED].includes(query.type as AlertNotificationType)) {
       qb.andWhere('n.type = :type', { type: query.type });
+    }
+    if (query?.from) {
+      const fromDate = new Date(query.from);
+      if (!Number.isNaN(fromDate.getTime())) {
+        qb.andWhere('n.createdAt >= :fromDate', { fromDate });
+      }
+    }
+    if (query?.to) {
+      const toDate = new Date(query.to);
+      if (!Number.isNaN(toDate.getTime())) {
+        qb.andWhere('n.createdAt <= :toDate', { toDate });
+      }
     }
 
     const [list, total] = await qb

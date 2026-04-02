@@ -108,6 +108,17 @@
                   <el-option label="风险告警" value="callback_risk" />
                   <el-option label="恢复通知" value="callback_recovered" />
                 </el-select>
+                <el-date-picker
+                  v-model="notificationCenter.timeRange"
+                  size="small"
+                  type="datetimerange"
+                  range-separator="至"
+                  start-placeholder="开始时间"
+                  end-placeholder="结束时间"
+                  style="width: 280px"
+                  @change="handleNotificationFilterChange"
+                />
+                <el-button size="small" @click="handleExportNotificationsCsv" :disabled="!notificationCenter.list.length">导出CSV</el-button>
               </div>
               <div v-if="!notificationCenter.list.length" class="callback-alert-empty">暂无通知</div>
               <div v-else class="callback-alert-list">
@@ -176,6 +187,7 @@ const notificationCenter = reactive({
   unread: 0,
   unreadOnly: false,
   type: '',
+  timeRange: [],
   page: 1,
   pageSize: 20
 })
@@ -194,6 +206,8 @@ const loadNotifications = async (silent = true) => {
         pageSize: notificationCenter.pageSize,
         unreadOnly: notificationCenter.unreadOnly,
         type: notificationCenter.type || undefined,
+        from: notificationCenter.timeRange?.[0] ? new Date(notificationCenter.timeRange[0]).toISOString() : undefined,
+        to: notificationCenter.timeRange?.[1] ? new Date(notificationCenter.timeRange[1]).toISOString() : undefined,
         _t: Date.now()
       }
     })
@@ -265,6 +279,33 @@ const markAllNotificationsRead = async () => {
 const handleNotificationFilterChange = async () => {
   notificationCenter.page = 1
   await loadNotifications(false)
+}
+
+const handleExportNotificationsCsv = () => {
+  if (!notificationCenter.list.length) return
+
+  const headers = ['createdAt', 'isRead', 'type', 'level', 'title', 'content', 'taskId', 'projectId']
+  const lines = [headers.join(',')]
+  for (const item of notificationCenter.list) {
+    const row = headers.map((key) => toCsvCell(item[key]))
+    lines.push(row.join(','))
+  }
+
+  const csv = `\uFEFF${lines.join('\n')}`
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `notifications_${Date.now()}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+const toCsvCell = (value) => {
+  const text = value === null || value === undefined ? '' : String(value)
+  return `"${text.replace(/"/g, '""')}"`
 }
 
 const handleNotificationPageChange = async (page) => {
@@ -371,6 +412,7 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .callback-alert-list {
