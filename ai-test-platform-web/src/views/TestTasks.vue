@@ -117,6 +117,7 @@
           <template #default="{ row }">
             <el-button type="success" link @click="handleExecute(row)">执行</el-button>
             <el-button type="primary" link @click="handleViewExecutions(row)">执行记录</el-button>
+            <el-button type="primary" link @click="handleViewCallbacks(row)">回调记录</el-button>
             <el-button type="primary" link @click="goToDefects(row)">关联缺陷</el-button>
             <el-button type="primary" link @click="goToReports(row)">关联报告</el-button>
             <el-button type="warning" link @click="handleGenerateReport(row)">生成报告</el-button>
@@ -304,6 +305,25 @@
       </template>
     </el-dialog>
 
+    <el-drawer v-model="callbackDrawerVisible" :title="callbackDrawerTitle" size="50%">
+      <el-table :data="callbackList" border stripe>
+        <el-table-column prop="createdAt" label="回调时间" width="180" />
+        <el-table-column prop="status" label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'success' ? 'success' : 'danger'">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="attempts" label="尝试次数" width="100" />
+        <el-table-column prop="responseStatus" label="响应码" width="100" />
+        <el-table-column prop="durationMs" label="耗时(ms)" width="110" />
+        <el-table-column prop="signatureEnabled" label="签名" width="90">
+          <template #default="{ row }">{{ row.signatureEnabled ? '是' : '否' }}</template>
+        </el-table-column>
+        <el-table-column prop="callbackUrl" label="回调地址" min-width="220" show-overflow-tooltip />
+        <el-table-column prop="errorMessage" label="错误信息" min-width="180" show-overflow-tooltip />
+      </el-table>
+    </el-drawer>
+
     <el-dialog v-model="runnerDiagVisible" title="Runner诊断" width="680px">
       <template v-if="runnerDiag">
         <div class="diag-grid">
@@ -357,12 +377,15 @@ const projects = ref([])
 const environments = ref([])
 const scripts = ref([])
 const executionList = ref([])
+const callbackList = ref([])
 const dialogVisible = ref(false)
 const executionDrawerVisible = ref(false)
+const callbackDrawerVisible = ref(false)
 const executionDetailVisible = ref(false)
 const runnerDiagVisible = ref(false)
 const dialogTitle = ref('')
 const executionDrawerTitle = ref('执行记录')
+const callbackDrawerTitle = ref('回调记录')
 const currentExecution = ref(null)
 const runnerDiag = ref(null)
 const runnerDiagLoading = ref(false)
@@ -943,6 +966,13 @@ const handleViewExecutions = async (row) => {
   }
   executionDrawerTitle.value = `执行记录 - ${row.name}`
   executionDrawerVisible.value = true
+}
+
+const handleViewCallbacks = async (row) => {
+  const res = await api.get(`/test-tasks/${row.id}/callbacks`, { params: { limit: 50, _t: Date.now() } })
+  callbackList.value = Array.isArray(res.data) ? res.data : []
+  callbackDrawerTitle.value = `回调记录 - ${row.name}`
+  callbackDrawerVisible.value = true
 }
 
 const handleCreateDefect = async (execution) => {

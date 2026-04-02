@@ -13,6 +13,7 @@ import { TestTask, TaskStatus } from './entities/test-task.entity';
 import { TestScript, ScriptExecutionMode } from '../test-script/entities/test-script.entity';
 import { Environment } from '../environment/entities/environment.entity';
 import { ExecutionErrorType, ExecutionRunnerSource, ExecutionStatus, TestExecution } from './entities/test-execution.entity';
+import { TaskCallback, TaskCallbackStatus } from './entities/task-callback.entity';
 import axios, { AxiosError } from 'axios';
 
 export interface TestResult {
@@ -58,6 +59,8 @@ export class TestExecutionService {
     private environmentRepository: Repository<Environment>,
     @InjectRepository(TestExecution)
     private executionRepository: Repository<TestExecution>,
+    @InjectRepository(TaskCallback)
+    private callbackRepository: Repository<TaskCallback>,
     private configService: ConfigService,
   ) {}
 
@@ -125,13 +128,13 @@ export class TestExecutionService {
       task.status = TaskStatus.FAILED;
       task.endTime = endAt;
     } finally {
-      await this.notifyTaskCallback(task, finalStatus, results, taskError);
+      await this.notifyTaskCallback(task, finalStatus, results, taskError, batchNo);
     }
 
     return results;
   }
 
-  private async notifyTaskCallback(task: TestTask, finalStatus: TaskStatus, results: TestResult[], taskError?: string): Promise<void> {
+  private async notifyTaskCallback(task: TestTask, finalStatus: TaskStatus, results: TestResult[], taskError?: string, batchNo?: string): Promise<void> {
     const triggerType = (task.triggerType || '').toLowerCase();
     const triggerUrl = task.triggerUrl;
 
@@ -143,6 +146,7 @@ export class TestExecutionService {
     const retryCount = Math.max(0, this.configService.get<number>('taskCallback.retryCount') ?? 2);
     const retryDelayMs = Math.max(200, this.configService.get<number>('taskCallback.retryDelayMs') ?? 1000);
     const callbackSecret = this.configService.get<string>('taskCallback.secret') || '';
+    const signatureEnabled = Boolean(callbackSecret);
     const maxAttempts = retryCount + 1;
 
     const payload = {
@@ -174,19 +178,78 @@ export class TestExecutionService {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         const signatureHeaders = this.buildTaskCallbackSignatureHeaders(payload, callbackSecret);
+        const callbackStartAt = Date.now();
 
-        await axios.post(triggerUrl, payload, {
+        const response = await axios.post(triggerUrl, payload, {
           timeout: timeoutMs,
+          validateStatus: () => true,
           headers: {
             'Content-Type': 'application/json',
             ...signatureHeaders,
           },
         });
-        this.logger.log(`任务回调成功: taskId=${task.id}, url=${triggerUrl}, attempt=${attempt}/${maxAttempts}`);
-        return;
+
+        const durationMs = Date.now() - callbackStartAt;
+        const statusCode = response.status;
+        const isSuccess = statusCode >= 200 && statusCode < 300;
+
+        if (isSuccess) {
+          await this.saveTaskCallbackRecord({
+            task,
+            batchNo,
+            payload,
+            triggerType,
+            triggerUrl,
+            attempts: attempt,
+            status: TaskCallbackStatus.SUCCESS,
+            responseStatus: statusCode,
+            durationMs,
+            signatureEnabled,
+          });
+          this.logger.log(`任务回调成功: taskId=${task.id}, url=${triggerUrl}, attempt=${attempt}/${maxAttempts}`);
+          return;
+        }
+
+        const httpError = `HTTP ${statusCode}`;
+        if (attempt >= maxAttempts) {
+          await this.saveTaskCallbackRecord({
+            task,
+            batchNo,
+            payload,
+            triggerType,
+            triggerUrl,
+            attempts: attempt,
+            status: TaskCallbackStatus.FAILED,
+            responseStatus: statusCode,
+            durationMs,
+            signatureEnabled,
+            errorMessage: httpError,
+          });
+          this.logger.error(
+            `任务回调失败（已重试结束）: taskId=${task.id}, url=${triggerUrl}, attempt=${attempt}/${maxAttempts}, error=${httpError}`,
+          );
+          return;
+        }
+
+        this.logger.warn(
+          `任务回调失败，将重试: taskId=${task.id}, url=${triggerUrl}, attempt=${attempt}/${maxAttempts}, error=${httpError}`,
+        );
+        await this.sleep(retryDelayMs * attempt);
       } catch (error) {
         const detail = this.toLogPreview((error as Error)?.message || error);
         if (attempt >= maxAttempts) {
+          await this.saveTaskCallbackRecord({
+            task,
+            batchNo,
+            payload,
+            triggerType,
+            triggerUrl,
+            attempts: attempt,
+            status: TaskCallbackStatus.FAILED,
+            durationMs: 0,
+            signatureEnabled,
+            errorMessage: detail,
+          });
           this.logger.error(
             `任务回调失败（已重试结束）: taskId=${task.id}, url=${triggerUrl}, attempt=${attempt}/${maxAttempts}, error=${detail}`,
           );
@@ -199,6 +262,46 @@ export class TestExecutionService {
         await this.sleep(retryDelayMs * attempt);
       }
     }
+  }
+
+  private async saveTaskCallbackRecord(params: {
+    task: TestTask;
+    batchNo?: string;
+    payload: Record<string, any>;
+    triggerType: string;
+    triggerUrl: string;
+    attempts: number;
+    status: TaskCallbackStatus;
+    responseStatus?: number;
+    durationMs: number;
+    signatureEnabled: boolean;
+    errorMessage?: string;
+  }): Promise<void> {
+    const record = this.callbackRepository.create({
+      taskId: params.task.id,
+      batchNo: params.batchNo,
+      triggerType: params.triggerType || 'webhook',
+      callbackUrl: params.triggerUrl,
+      event: String(params.payload?.event || ''),
+      status: params.status,
+      attempts: params.attempts,
+      responseStatus: params.responseStatus,
+      durationMs: params.durationMs,
+      signatureEnabled: params.signatureEnabled,
+      errorMessage: params.errorMessage,
+      requestBody: params.payload,
+    });
+
+    await this.callbackRepository.save(record);
+  }
+
+  async findCallbacks(taskId: string, limit: number = 20): Promise<TaskCallback[]> {
+    const safeLimit = Math.min(Math.max(limit, 1), 100);
+    return this.callbackRepository.find({
+      where: { taskId },
+      order: { createdAt: 'DESC' },
+      take: safeLimit,
+    });
   }
 
   private buildTaskCallbackSignatureHeaders(payload: Record<string, any>, secret: string): Record<string, string> {

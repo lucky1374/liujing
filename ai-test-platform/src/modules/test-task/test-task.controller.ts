@@ -87,6 +87,12 @@ export class TestTaskController {
     });
   }
 
+  @Get(':id/callbacks')
+  @ApiOperation({ description: '获取任务回调记录' })
+  findCallbacks(@Param('id') id: string, @Query('limit') limit?: string) {
+    return this.executionService.findCallbacks(id, limit ? Number(limit) : 20);
+  }
+
   @Delete(':id')
   @Roles(UserRole.ADMIN, UserRole.TESTER)
   @ApiOperation({ description: '删除任务' })
