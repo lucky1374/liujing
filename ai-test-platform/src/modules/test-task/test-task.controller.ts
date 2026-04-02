@@ -65,6 +65,37 @@ export class TestTaskController {
     return this.executionService.getCallbackAlertOverview(projectId, limit ? Number(limit) : 10);
   }
 
+  @Get('observability/notifications')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '获取站内告警通知列表' })
+  getAlertNotifications(
+    @Query('projectId') projectId?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('unreadOnly') unreadOnly?: string,
+  ) {
+    return this.executionService.findAlertNotifications({
+      projectId,
+      page: page ? Number(page) : 1,
+      pageSize: pageSize ? Number(pageSize) : 20,
+      unreadOnly: String(unreadOnly).toLowerCase() === 'true',
+    });
+  }
+
+  @Post('observability/notifications/:id/read')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '标记单条站内告警已读' })
+  markAlertNotificationRead(@Param('id') id: string) {
+    return this.executionService.markAlertNotificationRead(id);
+  }
+
+  @Post('observability/notifications/read-all')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '标记站内告警全部已读' })
+  markAllAlertNotificationsRead(@Query('projectId') projectId?: string) {
+    return this.executionService.markAllAlertNotificationsRead(projectId);
+  }
+
   @Get(':id')
   @ApiOperation({ description: '获取任务详情' })
   findOne(@Param('id') id: string) {

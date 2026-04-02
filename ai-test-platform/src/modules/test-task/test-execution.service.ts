@@ -9,11 +9,12 @@ import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { createHmac } from 'crypto';
-import { TestTask, TaskStatus } from './entities/test-task.entity';
+import { TaskType, TestTask, TaskStatus } from './entities/test-task.entity';
 import { TestScript, ScriptExecutionMode } from '../test-script/entities/test-script.entity';
 import { Environment } from '../environment/entities/environment.entity';
 import { ExecutionErrorType, ExecutionRunnerSource, ExecutionStatus, TestExecution } from './entities/test-execution.entity';
 import { TaskCallback, TaskCallbackStatus } from './entities/task-callback.entity';
+import { AlertNotification, AlertNotificationType } from './entities/alert-notification.entity';
 import axios, { AxiosError } from 'axios';
 
 export interface TestResult {
@@ -61,6 +62,8 @@ export class TestExecutionService {
     private executionRepository: Repository<TestExecution>,
     @InjectRepository(TaskCallback)
     private callbackRepository: Repository<TaskCallback>,
+    @InjectRepository(AlertNotification)
+    private alertNotificationRepository: Repository<AlertNotification>,
     private configService: ConfigService,
   ) {}
 
@@ -80,6 +83,10 @@ export class TestExecutionService {
     });
     task.status = TaskStatus.RUNNING;
     task.startTime = startAt;
+
+    if (task.type === TaskType.UI_TEST) {
+      return [];
+    }
 
     const results: TestResult[] = [];
     const batchNo = `BATCH-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -292,7 +299,125 @@ export class TestExecutionService {
       requestBody: params.payload,
     });
 
-    await this.callbackRepository.save(record);
+    const saved = await this.callbackRepository.save(record);
+    await this.evaluateAndCreateCallbackNotifications(params.task, saved);
+  }
+
+  private async evaluateAndCreateCallbackNotifications(task: TestTask, latestRecord: TaskCallback): Promise<void> {
+    const threshold = Math.max(1, this.configService.get<number>('taskCallback.alertConsecutiveFailed') ?? 3);
+    const latest = await this.callbackRepository.find({
+      where: { taskId: task.id },
+      order: { createdAt: 'DESC' },
+      take: threshold + 2,
+    });
+
+    const currentFailed = this.countLeadingFailed(latest);
+    const previousFailed = this.countLeadingFailed(latest.slice(1));
+    const currentRisk = currentFailed >= threshold;
+    const previousRisk = previousFailed >= threshold;
+
+    if (!previousRisk && currentRisk) {
+      await this.alertNotificationRepository.save(
+        this.alertNotificationRepository.create({
+          projectId: task.projectId,
+          taskId: task.id,
+          type: AlertNotificationType.CALLBACK_RISK,
+          level: 'danger',
+          title: '任务回调连续失败告警',
+          content: `${task.name} 连续回调失败 ${currentFailed} 次（阈值 ${threshold}）`,
+          payload: {
+            taskId: task.id,
+            taskName: task.name,
+            projectId: task.projectId,
+            consecutiveFailed: currentFailed,
+            threshold,
+            callbackId: latestRecord.id,
+          },
+          isRead: false,
+        }),
+      );
+      return;
+    }
+
+    if (previousRisk && !currentRisk) {
+      await this.alertNotificationRepository.save(
+        this.alertNotificationRepository.create({
+          projectId: task.projectId,
+          taskId: task.id,
+          type: AlertNotificationType.CALLBACK_RECOVERED,
+          level: 'success',
+          title: '任务回调告警恢复',
+          content: `${task.name} 的回调状态已恢复正常`,
+          payload: {
+            taskId: task.id,
+            taskName: task.name,
+            projectId: task.projectId,
+            callbackId: latestRecord.id,
+          },
+          isRead: false,
+        }),
+      );
+    }
+  }
+
+  private countLeadingFailed(items: TaskCallback[]): number {
+    let failed = 0;
+    for (const item of items) {
+      if (item.status === TaskCallbackStatus.FAILED) failed += 1;
+      else break;
+    }
+    return failed;
+  }
+
+  async findAlertNotifications(query?: {
+    page?: number;
+    pageSize?: number;
+    projectId?: string;
+    unreadOnly?: boolean;
+  }): Promise<{ list: AlertNotification[]; total: number; unread: number; page: number; pageSize: number }> {
+    const page = Math.max(1, Number(query?.page || 1));
+    const pageSize = Math.min(Math.max(1, Number(query?.pageSize || 20)), 100);
+
+    const qb = this.alertNotificationRepository.createQueryBuilder('n');
+    if (query?.projectId) {
+      qb.where('(n.projectId = :projectId OR n.projectId IS NULL)', { projectId: query.projectId });
+    }
+    if (query?.unreadOnly) {
+      qb.andWhere('n.isRead = :isRead', { isRead: false });
+    }
+
+    const [list, total] = await qb
+      .orderBy('n.createdAt', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getManyAndCount();
+
+    const unreadQb = this.alertNotificationRepository.createQueryBuilder('n').where('n.isRead = :isRead', { isRead: false });
+    if (query?.projectId) {
+      unreadQb.andWhere('(n.projectId = :projectId OR n.projectId IS NULL)', { projectId: query.projectId });
+    }
+    const unread = await unreadQb.getCount();
+
+    return { list, total, unread, page, pageSize };
+  }
+
+  async markAlertNotificationRead(id: string): Promise<void> {
+    await this.alertNotificationRepository.update({ id }, { isRead: true, readAt: new Date() });
+  }
+
+  async markAllAlertNotificationsRead(projectId?: string): Promise<void> {
+    if (projectId) {
+      await this.alertNotificationRepository
+        .createQueryBuilder()
+        .update(AlertNotification)
+        .set({ isRead: true, readAt: new Date() })
+        .where('isRead = :isRead', { isRead: false })
+        .andWhere('(projectId = :projectId OR projectId IS NULL)', { projectId })
+        .execute();
+      return;
+    }
+
+    await this.alertNotificationRepository.update({ isRead: false }, { isRead: true, readAt: new Date() });
   }
 
   async findCallbacks(taskId: string, query?: {

@@ -63,6 +63,10 @@
             <el-icon><Monitor /></el-icon>
             <span>UI 自动化</span>
           </template>
+          <el-menu-item index="/ui-test-tasks">
+            <el-icon><Operation /></el-icon>
+            <span>UI 测试任务</span>
+          </el-menu-item>
           <el-menu-item index="/ai-agent-lab">
             <el-icon><MagicStick /></el-icon>
             <span>UI 自动化实验室</span>
@@ -81,25 +85,37 @@
         <div class="header-right">
           <el-popover placement="bottom-end" trigger="click" width="420">
             <template #reference>
-              <el-badge :value="callbackAlert.totalRisky" :hidden="!callbackAlert.totalRisky" :max="99" class="callback-alert-badge">
+              <el-badge :value="notificationCenter.unread" :hidden="!notificationCenter.unread" :max="99" class="callback-alert-badge">
                 <el-button text>
                   <el-icon><Bell /></el-icon>
-                  回调告警
+                  通知中心
                 </el-button>
               </el-badge>
             </template>
 
             <div class="callback-alert-panel">
               <div class="callback-alert-header">
-                <span>连续失败告警（阈值 {{ callbackAlert.threshold }}）</span>
-                <el-button size="small" text @click="loadCallbackAlert(false)">刷新</el-button>
+                <span>站内通知（未读 {{ notificationCenter.unread }}）</span>
+                <div>
+                  <el-button size="small" text @click="loadNotifications(false)">刷新</el-button>
+                  <el-button size="small" text @click="markAllNotificationsRead" :disabled="!notificationCenter.unread">全部已读</el-button>
+                </div>
               </div>
-              <div v-if="!callbackAlert.riskyTasks.length" class="callback-alert-empty">暂无风险任务</div>
+              <div class="callback-actions-inline">
+                <el-switch v-model="notificationCenter.unreadOnly" active-text="仅未读" @change="handleNotificationFilterChange" />
+              </div>
+              <div v-if="!notificationCenter.list.length" class="callback-alert-empty">暂无通知</div>
               <div v-else class="callback-alert-list">
-                <div v-for="item in callbackAlert.riskyTasks" :key="item.taskId" class="callback-alert-item">
-                  <div class="callback-alert-title">{{ item.taskName }}</div>
-                  <div class="callback-alert-meta">连续失败 {{ item.consecutiveFailed }} 次</div>
-                  <el-button size="small" text type="primary" @click="goToTask(item)">查看任务</el-button>
+                <div v-for="item in notificationCenter.list" :key="item.id" class="callback-alert-item">
+                  <div class="callback-alert-title">
+                    {{ item.title }}
+                    <el-tag v-if="!item.isRead" size="small" type="danger">未读</el-tag>
+                  </div>
+                  <div class="callback-alert-meta">{{ item.content }}</div>
+                  <div class="callback-alert-actions">
+                    <el-button size="small" text type="primary" @click="goToNotification(item)">查看任务</el-button>
+                    <el-button size="small" text @click="markNotificationRead(item)" :disabled="item.isRead">标记已读</el-button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -138,10 +154,13 @@ const userStore = useUserStore()
 const projectStore = useProjectStore()
 let callbackAlertTimer = null
 
-const callbackAlert = reactive({
-  threshold: 3,
-  totalRisky: 0,
-  riskyTasks: []
+const notificationCenter = reactive({
+  list: [],
+  total: 0,
+  unread: 0,
+  unreadOnly: false,
+  page: 1,
+  pageSize: 20
 })
 
 const loadProjects = async () => {
@@ -149,42 +168,76 @@ const loadProjects = async () => {
   projectStore.setProjects(res.data.list || [])
 }
 
-const loadCallbackAlert = async (silent = true) => {
+const loadNotifications = async (silent = true) => {
   try {
-    const res = await api.get('/test-tasks/observability/callback-alerts', {
+    const res = await api.get('/test-tasks/observability/notifications', {
       params: {
         projectId: projectStore.selectedProjectId || undefined,
-        limit: 10,
+        page: notificationCenter.page,
+        pageSize: notificationCenter.pageSize,
+        unreadOnly: notificationCenter.unreadOnly,
         _t: Date.now()
       }
     })
-    callbackAlert.threshold = Number(res.data?.threshold || 3)
-    callbackAlert.totalRisky = Number(res.data?.totalRisky || 0)
-    callbackAlert.riskyTasks = Array.isArray(res.data?.riskyTasks) ? res.data.riskyTasks : []
+    notificationCenter.list = Array.isArray(res.data?.list) ? res.data.list : []
+    notificationCenter.total = Number(res.data?.total || 0)
+    notificationCenter.unread = Number(res.data?.unread || 0)
   } catch {
     if (!silent) {
-      callbackAlert.threshold = 3
-      callbackAlert.totalRisky = 0
-      callbackAlert.riskyTasks = []
+      notificationCenter.list = []
+      notificationCenter.total = 0
+      notificationCenter.unread = 0
     }
   }
 }
 
 const handleProjectChange = (projectId) => {
   projectStore.setSelectedProjectId(projectId)
-  loadCallbackAlert()
+  notificationCenter.page = 1
+  loadNotifications()
 }
 
-const goToTask = (item) => {
+const goToNotification = async (item) => {
+  if (!item.isRead) {
+    await markNotificationRead(item, true)
+  }
+
+  const payload = item.payload || {}
   router.push({
     path: '/test-tasks',
     query: {
-      taskId: item.taskId,
-      projectId: item.projectId || '',
+      taskId: payload.taskId || item.taskId,
+      projectId: payload.projectId || item.projectId || '',
       openCallbacks: '1',
-      callbackStatus: 'failed'
+      callbackStatus: 'failed',
+      callbackBatchNo: payload.batchNo || undefined
     }
   })
+}
+
+const markNotificationRead = async (item, silent = false) => {
+  try {
+    await api.post(`/test-tasks/observability/notifications/${item.id}/read`)
+    item.isRead = true
+    if (notificationCenter.unread > 0) notificationCenter.unread -= 1
+    if (!silent) await loadNotifications(true)
+  } catch {
+    // ignore
+  }
+}
+
+const markAllNotificationsRead = async () => {
+  await api.post('/test-tasks/observability/notifications/read-all', null, {
+    params: {
+      projectId: projectStore.selectedProjectId || undefined
+    }
+  })
+  await loadNotifications(false)
+}
+
+const handleNotificationFilterChange = async () => {
+  notificationCenter.page = 1
+  await loadNotifications(false)
 }
 
 const handleCommand = (command) => {
@@ -196,9 +249,9 @@ const handleCommand = (command) => {
 
 onMounted(async () => {
   await loadProjects()
-  await loadCallbackAlert()
+  await loadNotifications()
   callbackAlertTimer = window.setInterval(() => {
-    loadCallbackAlert(true)
+    loadNotifications(true)
   }, 30000)
 })
 
@@ -282,6 +335,10 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+.callback-actions-inline {
+  margin-bottom: 8px;
+}
+
 .callback-alert-list {
   display: flex;
   flex-direction: column;
@@ -305,6 +362,11 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: #f56c6c;
   margin-bottom: 2px;
+}
+
+.callback-alert-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .user-info {
