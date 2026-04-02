@@ -316,11 +316,17 @@
         <el-table-column prop="attempts" label="尝试次数" width="100" />
         <el-table-column prop="responseStatus" label="响应码" width="100" />
         <el-table-column prop="durationMs" label="耗时(ms)" width="110" />
+        <el-table-column prop="batchNo" label="执行批次" min-width="170" show-overflow-tooltip />
         <el-table-column prop="signatureEnabled" label="签名" width="90">
           <template #default="{ row }">{{ row.signatureEnabled ? '是' : '否' }}</template>
         </el-table-column>
         <el-table-column prop="callbackUrl" label="回调地址" min-width="220" show-overflow-tooltip />
         <el-table-column prop="errorMessage" label="错误信息" min-width="180" show-overflow-tooltip />
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button type="primary" link :disabled="!row.batchNo || !currentCallbackTask" @click="handleViewBatchExecutions(row)">查看该批执行</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </el-drawer>
 
@@ -378,6 +384,7 @@ const environments = ref([])
 const scripts = ref([])
 const executionList = ref([])
 const callbackList = ref([])
+const currentCallbackTask = ref(null)
 const dialogVisible = ref(false)
 const executionDrawerVisible = ref(false)
 const callbackDrawerVisible = ref(false)
@@ -971,8 +978,24 @@ const handleViewExecutions = async (row) => {
 const handleViewCallbacks = async (row) => {
   const res = await api.get(`/test-tasks/${row.id}/callbacks`, { params: { limit: 50, _t: Date.now() } })
   callbackList.value = Array.isArray(res.data) ? res.data : []
+  currentCallbackTask.value = row
   callbackDrawerTitle.value = `回调记录 - ${row.name}`
   callbackDrawerVisible.value = true
+}
+
+const handleViewBatchExecutions = async (callback) => {
+  if (!currentCallbackTask.value || !callback?.batchNo) return
+
+  const res = await api.get(`/test-tasks/${currentCallbackTask.value.id}/executions`, {
+    params: {
+      batchNo: callback.batchNo,
+      _t: Date.now()
+    }
+  })
+  executionList.value = Array.isArray(res.data) ? res.data : []
+  executionReasonFilter.value = ''
+  executionDrawerTitle.value = `执行记录(${callback.batchNo}) - ${currentCallbackTask.value.name}`
+  executionDrawerVisible.value = true
 }
 
 const handleCreateDefect = async (execution) => {
