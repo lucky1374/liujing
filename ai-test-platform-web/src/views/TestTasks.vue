@@ -306,6 +306,9 @@
     </el-dialog>
 
     <el-drawer v-model="callbackDrawerVisible" :title="callbackDrawerTitle" size="50%">
+      <div class="callback-actions-row">
+        <el-button size="small" @click="handleExportCallbacksCsv" :disabled="!callbackList.length">导出CSV</el-button>
+      </div>
       <el-table :data="callbackList" border stripe>
         <el-table-column prop="createdAt" label="回调时间" width="180" />
         <el-table-column prop="status" label="状态" width="100">
@@ -983,6 +986,41 @@ const handleViewCallbacks = async (row) => {
   callbackDrawerVisible.value = true
 }
 
+const handleExportCallbacksCsv = () => {
+  if (!callbackList.value.length) {
+    ElMessage.warning('暂无可导出的回调记录')
+    return
+  }
+
+  const headers = ['createdAt', 'status', 'attempts', 'responseStatus', 'durationMs', 'signatureEnabled', 'batchNo', 'callbackUrl', 'errorMessage']
+  const lines = [headers.join(',')]
+
+  for (const item of callbackList.value) {
+    const row = headers.map((key) => toCsvCell(item[key]))
+    lines.push(row.join(','))
+  }
+
+  const csv = `\uFEFF${lines.join('\n')}`
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  const taskName = currentCallbackTask.value?.name || 'task'
+  const safeName = taskName.replace(/[\\/:*?"<>|]/g, '_')
+  a.download = `callbacks_${safeName}_${Date.now()}.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  ElMessage.success('回调记录CSV已导出')
+}
+
+const toCsvCell = (value) => {
+  const text = value === null || value === undefined ? '' : String(value)
+  const escaped = text.replace(/"/g, '""')
+  return `"${escaped}"`
+}
+
 const handleViewBatchExecutions = async (callback) => {
   if (!currentCallbackTask.value || !callback?.batchNo) return
 
@@ -1328,6 +1366,10 @@ const getExecutionReason = (execution) => {
 }
 
 .execution-filter-row {
+  margin-bottom: 10px;
+}
+
+.callback-actions-row {
   margin-bottom: 10px;
 }
 
