@@ -41,5 +41,6 @@ export default () => ({
     timeoutMs: parseInt(process.env.TASK_CALLBACK_TIMEOUT_MS || '5000', 10),
     retryCount: parseInt(process.env.TASK_CALLBACK_RETRY_COUNT || '2', 10),
     retryDelayMs: parseInt(process.env.TASK_CALLBACK_RETRY_DELAY_MS || '1000', 10),
+    secret: process.env.TASK_CALLBACK_SECRET || '',
   },
 });

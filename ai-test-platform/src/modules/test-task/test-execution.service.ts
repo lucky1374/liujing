@@ -8,6 +8,7 @@ import { existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
+import { createHmac } from 'crypto';
 import { TestTask, TaskStatus } from './entities/test-task.entity';
 import { TestScript, ScriptExecutionMode } from '../test-script/entities/test-script.entity';
 import { Environment } from '../environment/entities/environment.entity';
@@ -141,6 +142,7 @@ export class TestExecutionService {
     const timeoutMs = Math.max(1000, this.configService.get<number>('taskCallback.timeoutMs') ?? 5000);
     const retryCount = Math.max(0, this.configService.get<number>('taskCallback.retryCount') ?? 2);
     const retryDelayMs = Math.max(200, this.configService.get<number>('taskCallback.retryDelayMs') ?? 1000);
+    const callbackSecret = this.configService.get<string>('taskCallback.secret') || '';
     const maxAttempts = retryCount + 1;
 
     const payload = {
@@ -171,9 +173,14 @@ export class TestExecutionService {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
+        const signatureHeaders = this.buildTaskCallbackSignatureHeaders(payload, callbackSecret);
+
         await axios.post(triggerUrl, payload, {
           timeout: timeoutMs,
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...signatureHeaders,
+          },
         });
         this.logger.log(`任务回调成功: taskId=${task.id}, url=${triggerUrl}, attempt=${attempt}/${maxAttempts}`);
         return;
@@ -192,6 +199,25 @@ export class TestExecutionService {
         await this.sleep(retryDelayMs * attempt);
       }
     }
+  }
+
+  private buildTaskCallbackSignatureHeaders(payload: Record<string, any>, secret: string): Record<string, string> {
+    const body = JSON.stringify(payload);
+    const timestamp = String(Date.now());
+
+    if (!secret) {
+      return {
+        'X-Task-Timestamp': timestamp,
+      };
+    }
+
+    const signatureBase = `${timestamp}.${body}`;
+    const signature = createHmac('sha256', secret).update(signatureBase).digest('hex');
+    return {
+      'X-Task-Signature': `sha256=${signature}`,
+      'X-Task-Timestamp': timestamp,
+      'X-Task-Signature-Alg': 'HMAC-SHA256',
+    };
   }
 
   private async getTaskScripts(task: TestTask): Promise<TestScript[]> {
