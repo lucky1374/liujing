@@ -406,6 +406,38 @@ export class TestExecutionService {
     return { success: false, attempts: maxAttempts, errorMessage: 'unknown_error' };
   }
 
+  async retryFailedCallbacks(taskId: string, limit: number = 20): Promise<{
+    total: number;
+    success: number;
+    failed: number;
+    results: Array<{ callbackId: string; success: boolean; attempts: number; responseStatus?: number; errorMessage?: string }>;
+  }> {
+    const safeLimit = Math.min(Math.max(limit, 1), 100);
+    const failedCallbacks = await this.callbackRepository.find({
+      where: { taskId, status: TaskCallbackStatus.FAILED },
+      order: { createdAt: 'DESC' },
+      take: safeLimit,
+    });
+
+    const results: Array<{ callbackId: string; success: boolean; attempts: number; responseStatus?: number; errorMessage?: string }> = [];
+    let success = 0;
+    let failed = 0;
+
+    for (const item of failedCallbacks) {
+      const retried = await this.retryCallback(taskId, item.id);
+      results.push({ callbackId: item.id, ...retried });
+      if (retried.success) success += 1;
+      else failed += 1;
+    }
+
+    return {
+      total: failedCallbacks.length,
+      success,
+      failed,
+      results,
+    };
+  }
+
   private buildTaskCallbackSignatureHeaders(payload: Record<string, any>, secret: string): Record<string, string> {
     const body = JSON.stringify(payload);
     const timestamp = String(Date.now());

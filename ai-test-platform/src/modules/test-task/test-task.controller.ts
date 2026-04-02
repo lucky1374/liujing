@@ -100,6 +100,13 @@ export class TestTaskController {
     return this.executionService.retryCallback(id, callbackId);
   }
 
+  @Post(':id/callbacks/retry-failed')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '批量重试失败任务回调' })
+  retryFailedCallbacks(@Param('id') id: string, @Query('limit') limit?: string) {
+    return this.executionService.retryFailedCallbacks(id, limit ? Number(limit) : 20);
+  }
+
   @Delete(':id')
   @Roles(UserRole.ADMIN, UserRole.TESTER)
   @ApiOperation({ description: '删除任务' })

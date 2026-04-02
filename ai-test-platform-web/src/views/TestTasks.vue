@@ -307,9 +307,15 @@
 
     <el-drawer v-model="callbackDrawerVisible" :title="callbackDrawerTitle" size="50%">
       <div class="callback-actions-row">
+        <el-select v-model="callbackStatusFilter" size="small" style="width: 150px">
+          <el-option label="全部状态" value="" />
+          <el-option label="成功" value="success" />
+          <el-option label="失败" value="failed" />
+        </el-select>
+        <el-button size="small" type="warning" @click="handleRetryFailedCallbacks" :disabled="!failedCallbackCount">重试失败回调</el-button>
         <el-button size="small" @click="handleExportCallbacksCsv" :disabled="!callbackList.length">导出CSV</el-button>
       </div>
-      <el-table :data="callbackList" border stripe>
+      <el-table :data="filteredCallbackList" border stripe>
         <el-table-column prop="createdAt" label="回调时间" width="180" />
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
@@ -389,6 +395,7 @@ const scripts = ref([])
 const executionList = ref([])
 const callbackList = ref([])
 const currentCallbackTask = ref(null)
+const callbackStatusFilter = ref('')
 const dialogVisible = ref(false)
 const executionDrawerVisible = ref(false)
 const callbackDrawerVisible = ref(false)
@@ -613,6 +620,13 @@ const filteredExecutionList = computed(() => {
   if (!executionReasonFilter.value) return executionList.value
   return executionList.value.filter((item) => getExecutionReason(item) === executionReasonFilter.value)
 })
+
+const filteredCallbackList = computed(() => {
+  if (!callbackStatusFilter.value) return callbackList.value
+  return callbackList.value.filter((item) => item.status === callbackStatusFilter.value)
+})
+
+const failedCallbackCount = computed(() => callbackList.value.filter((item) => item.status === 'failed').length)
 
 const globalFailureReasonOptions = computed(() => {
   const fromOverview = (observability.value.topFailureReasons || []).map((item) => item.reason).filter(Boolean)
@@ -982,6 +996,7 @@ const handleViewExecutions = async (row) => {
 const handleViewCallbacks = async (row) => {
   const res = await api.get(`/test-tasks/${row.id}/callbacks`, { params: { limit: 50, _t: Date.now() } })
   callbackList.value = Array.isArray(res.data) ? res.data : []
+  callbackStatusFilter.value = ''
   currentCallbackTask.value = row
   callbackDrawerTitle.value = `回调记录 - ${row.name}`
   callbackDrawerVisible.value = true
@@ -999,8 +1014,24 @@ const handleRetryCallback = async (callback) => {
   }
 }
 
+const handleRetryFailedCallbacks = async () => {
+  if (!currentCallbackTask.value) return
+
+  try {
+    const res = await api.post(`/test-tasks/${currentCallbackTask.value.id}/callbacks/retry-failed`, null, {
+      params: { limit: 50 }
+    })
+    const data = res.data || {}
+    ElMessage.success(`批量重试完成：成功 ${data.success || 0}，失败 ${data.failed || 0}`)
+    await handleViewCallbacks(currentCallbackTask.value)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '批量重试失败')
+  }
+}
+
 const handleExportCallbacksCsv = () => {
-  if (!callbackList.value.length) {
+  const list = filteredCallbackList.value
+  if (!list.length) {
     ElMessage.warning('暂无可导出的回调记录')
     return
   }
@@ -1008,7 +1039,7 @@ const handleExportCallbacksCsv = () => {
   const headers = ['createdAt', 'status', 'attempts', 'responseStatus', 'durationMs', 'signatureEnabled', 'batchNo', 'callbackUrl', 'errorMessage']
   const lines = [headers.join(',')]
 
-  for (const item of callbackList.value) {
+  for (const item of list) {
     const row = headers.map((key) => toCsvCell(item[key]))
     lines.push(row.join(','))
   }
@@ -1383,6 +1414,9 @@ const getExecutionReason = (execution) => {
 }
 
 .callback-actions-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-bottom: 10px;
 }
 
