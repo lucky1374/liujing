@@ -93,6 +93,13 @@ export class TestTaskController {
     return this.executionService.findCallbacks(id, limit ? Number(limit) : 20);
   }
 
+  @Post(':id/callbacks/:callbackId/retry')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '重试单条任务回调' })
+  retryCallback(@Param('id') id: string, @Param('callbackId') callbackId: string) {
+    return this.executionService.retryCallback(id, callbackId);
+  }
+
   @Delete(':id')
   @Roles(UserRole.ADMIN, UserRole.TESTER)
   @ApiOperation({ description: '删除任务' })

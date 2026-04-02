@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Between, In, Repository } from 'typeorm';
@@ -302,6 +302,108 @@ export class TestExecutionService {
       order: { createdAt: 'DESC' },
       take: safeLimit,
     });
+  }
+
+  async retryCallback(taskId: string, callbackId: string): Promise<{ success: boolean; attempts: number; responseStatus?: number; errorMessage?: string }> {
+    const callback = await this.callbackRepository.findOne({ where: { id: callbackId, taskId } });
+    if (!callback) {
+      throw new NotFoundException('回调记录不存在');
+    }
+
+    const task = await this.taskRepository.findOne({ where: { id: taskId } });
+    if (!task) {
+      throw new NotFoundException('任务不存在');
+    }
+
+    const payload = (callback.requestBody || {}) as Record<string, any>;
+    const triggerUrl = callback.callbackUrl;
+    if (!triggerUrl) {
+      throw new NotFoundException('回调地址不存在');
+    }
+
+    const triggerType = callback.triggerType || 'webhook';
+    const timeoutMs = Math.max(1000, this.configService.get<number>('taskCallback.timeoutMs') ?? 5000);
+    const retryCount = Math.max(0, this.configService.get<number>('taskCallback.retryCount') ?? 2);
+    const retryDelayMs = Math.max(200, this.configService.get<number>('taskCallback.retryDelayMs') ?? 1000);
+    const callbackSecret = this.configService.get<string>('taskCallback.secret') || '';
+    const signatureEnabled = Boolean(callbackSecret);
+    const maxAttempts = retryCount + 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const signatureHeaders = this.buildTaskCallbackSignatureHeaders(payload, callbackSecret);
+        const callbackStartAt = Date.now();
+        const response = await axios.post(triggerUrl, payload, {
+          timeout: timeoutMs,
+          validateStatus: () => true,
+          headers: {
+            'Content-Type': 'application/json',
+            ...signatureHeaders,
+          },
+        });
+
+        const durationMs = Date.now() - callbackStartAt;
+        const statusCode = response.status;
+        const isSuccess = statusCode >= 200 && statusCode < 300;
+
+        if (isSuccess) {
+          await this.saveTaskCallbackRecord({
+            task,
+            batchNo: callback.batchNo,
+            payload,
+            triggerType,
+            triggerUrl,
+            attempts: attempt,
+            status: TaskCallbackStatus.SUCCESS,
+            responseStatus: statusCode,
+            durationMs,
+            signatureEnabled,
+          });
+          return { success: true, attempts: attempt, responseStatus: statusCode };
+        }
+
+        const httpError = `HTTP ${statusCode}`;
+        if (attempt >= maxAttempts) {
+          await this.saveTaskCallbackRecord({
+            task,
+            batchNo: callback.batchNo,
+            payload,
+            triggerType,
+            triggerUrl,
+            attempts: attempt,
+            status: TaskCallbackStatus.FAILED,
+            responseStatus: statusCode,
+            durationMs,
+            signatureEnabled,
+            errorMessage: httpError,
+          });
+          return { success: false, attempts: attempt, responseStatus: statusCode, errorMessage: httpError };
+        }
+
+        await this.sleep(retryDelayMs * attempt);
+      } catch (error) {
+        const detail = this.toLogPreview((error as Error)?.message || error) || 'unknown_error';
+        if (attempt >= maxAttempts) {
+          await this.saveTaskCallbackRecord({
+            task,
+            batchNo: callback.batchNo,
+            payload,
+            triggerType,
+            triggerUrl,
+            attempts: attempt,
+            status: TaskCallbackStatus.FAILED,
+            durationMs: 0,
+            signatureEnabled,
+            errorMessage: detail,
+          });
+          return { success: false, attempts: attempt, errorMessage: detail };
+        }
+
+        await this.sleep(retryDelayMs * attempt);
+      }
+    }
+
+    return { success: false, attempts: maxAttempts, errorMessage: 'unknown_error' };
   }
 
   private buildTaskCallbackSignatureHeaders(payload: Record<string, any>, secret: string): Record<string, string> {

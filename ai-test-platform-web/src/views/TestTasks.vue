@@ -325,9 +325,10 @@
         </el-table-column>
         <el-table-column prop="callbackUrl" label="回调地址" min-width="220" show-overflow-tooltip />
         <el-table-column prop="errorMessage" label="错误信息" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link :disabled="!row.batchNo || !currentCallbackTask" @click="handleViewBatchExecutions(row)">查看该批执行</el-button>
+            <el-button type="warning" link :disabled="!currentCallbackTask" @click="handleRetryCallback(row)">重试回调</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -984,6 +985,18 @@ const handleViewCallbacks = async (row) => {
   currentCallbackTask.value = row
   callbackDrawerTitle.value = `回调记录 - ${row.name}`
   callbackDrawerVisible.value = true
+}
+
+const handleRetryCallback = async (callback) => {
+  if (!currentCallbackTask.value) return
+
+  try {
+    await api.post(`/test-tasks/${currentCallbackTask.value.id}/callbacks/${callback.id}/retry`)
+    ElMessage.success('回调重试已触发')
+    await handleViewCallbacks(currentCallbackTask.value)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '回调重试失败')
+  }
 }
 
 const handleExportCallbacksCsv = () => {
