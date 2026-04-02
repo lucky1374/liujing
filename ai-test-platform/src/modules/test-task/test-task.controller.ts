@@ -89,8 +89,23 @@ export class TestTaskController {
 
   @Get(':id/callbacks')
   @ApiOperation({ description: '获取任务回调记录' })
-  findCallbacks(@Param('id') id: string, @Query('limit') limit?: string) {
-    return this.executionService.findCallbacks(id, limit ? Number(limit) : 20);
+  findCallbacks(
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('status') status?: string,
+    @Query('batchNo') batchNo?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.executionService.findCallbacks(id, {
+      page: page ? Number(page) : 1,
+      pageSize: pageSize ? Number(pageSize) : 20,
+      status,
+      batchNo,
+      from,
+      to,
+    });
   }
 
   @Get(':id/callbacks/health')

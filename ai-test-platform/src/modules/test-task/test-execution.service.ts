@@ -295,13 +295,50 @@ export class TestExecutionService {
     await this.callbackRepository.save(record);
   }
 
-  async findCallbacks(taskId: string, limit: number = 20): Promise<TaskCallback[]> {
-    const safeLimit = Math.min(Math.max(limit, 1), 100);
-    return this.callbackRepository.find({
-      where: { taskId },
-      order: { createdAt: 'DESC' },
-      take: safeLimit,
-    });
+  async findCallbacks(taskId: string, query?: {
+    page?: number;
+    pageSize?: number;
+    status?: string;
+    batchNo?: string;
+    from?: string;
+    to?: string;
+  }): Promise<{ list: TaskCallback[]; total: number; page: number; pageSize: number }> {
+    const page = Math.max(1, Number(query?.page || 1));
+    const pageSize = Math.min(Math.max(1, Number(query?.pageSize || 20)), 100);
+
+    const qb = this.callbackRepository
+      .createQueryBuilder('cb')
+      .where('cb.taskId = :taskId', { taskId });
+
+    if (query?.status === TaskCallbackStatus.SUCCESS || query?.status === TaskCallbackStatus.FAILED) {
+      qb.andWhere('cb.status = :status', { status: query.status });
+    }
+
+    if (query?.batchNo) {
+      qb.andWhere('cb.batchNo = :batchNo', { batchNo: query.batchNo });
+    }
+
+    if (query?.from) {
+      const fromDate = new Date(query.from);
+      if (!Number.isNaN(fromDate.getTime())) {
+        qb.andWhere('cb.createdAt >= :fromDate', { fromDate });
+      }
+    }
+
+    if (query?.to) {
+      const toDate = new Date(query.to);
+      if (!Number.isNaN(toDate.getTime())) {
+        qb.andWhere('cb.createdAt <= :toDate', { toDate });
+      }
+    }
+
+    const [list, total] = await qb
+      .orderBy('cb.createdAt', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getManyAndCount();
+
+    return { list, total, page, pageSize };
   }
 
   async getCallbackHealth(taskId: string): Promise<{

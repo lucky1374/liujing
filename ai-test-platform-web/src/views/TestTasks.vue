@@ -325,21 +325,33 @@
         @close="callbackRecoveredNotice = false"
       />
       <div class="callback-actions-row">
-        <el-select v-model="callbackStatusFilter" size="small" style="width: 150px">
+        <el-select v-model="callbackQuery.status" size="small" style="width: 150px" @change="handleCallbackQueryChange">
           <el-option label="全部状态" value="" />
           <el-option label="成功" value="success" />
           <el-option label="失败" value="failed" />
         </el-select>
+        <el-input v-model="callbackQuery.batchNo" size="small" placeholder="按批次号筛选" style="width: 190px" clearable @keyup.enter="handleCallbackQueryChange" />
+        <el-date-picker
+          v-model="callbackTimeRange"
+          type="datetimerange"
+          size="small"
+          range-separator="至"
+          start-placeholder="开始时间"
+          end-placeholder="结束时间"
+          style="width: 330px"
+          @change="handleCallbackQueryChange"
+        />
+        <el-button size="small" @click="handleCallbackQueryReset">重置</el-button>
         <el-select v-model="callbackSnoozeMinutes" size="small" style="width: 130px" :disabled="!callbackHealth.risk">
           <el-option label="静音30分钟" :value="30" />
           <el-option label="静音2小时" :value="120" />
           <el-option label="静音24小时" :value="1440" />
         </el-select>
         <el-button size="small" :disabled="!callbackHealth.risk" @click="handleSnoozeCallbackAlert">告警静音</el-button>
-        <el-button size="small" type="warning" @click="handleRetryFailedCallbacks" :disabled="!failedCallbackCount">重试失败回调</el-button>
+        <el-button size="small" type="warning" @click="handleRetryFailedCallbacks" :disabled="!currentCallbackTask">重试失败回调</el-button>
         <el-button size="small" @click="handleExportCallbacksCsv" :disabled="!callbackList.length">导出CSV</el-button>
       </div>
-      <el-table :data="filteredCallbackList" border stripe>
+      <el-table :data="callbackList" border stripe>
         <el-table-column prop="createdAt" label="回调时间" width="180" />
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
@@ -362,6 +374,16 @@
           </template>
         </el-table-column>
       </el-table>
+      <el-pagination
+        style="margin-top: 12px"
+        layout="total, prev, pager, next, sizes"
+        :total="callbackPagination.total"
+        :current-page="callbackPagination.page"
+        :page-size="callbackPagination.pageSize"
+        :page-sizes="[10, 20, 50, 100]"
+        @current-change="handleCallbackPageChange"
+        @size-change="handleCallbackSizeChange"
+      />
     </el-drawer>
 
     <el-dialog v-model="runnerDiagVisible" title="Runner诊断" width="680px">
@@ -419,7 +441,16 @@ const scripts = ref([])
 const executionList = ref([])
 const callbackList = ref([])
 const currentCallbackTask = ref(null)
-const callbackStatusFilter = ref('')
+const callbackTimeRange = ref([])
+const callbackQuery = reactive({
+  status: '',
+  batchNo: ''
+})
+const callbackPagination = reactive({
+  page: 1,
+  pageSize: 20,
+  total: 0
+})
 const callbackSnoozeMinutes = ref(30)
 const callbackRecoveredNotice = ref(false)
 const callbackHealth = ref({
@@ -656,13 +687,6 @@ const filteredExecutionList = computed(() => {
   if (!executionReasonFilter.value) return executionList.value
   return executionList.value.filter((item) => getExecutionReason(item) === executionReasonFilter.value)
 })
-
-const filteredCallbackList = computed(() => {
-  if (!callbackStatusFilter.value) return callbackList.value
-  return callbackList.value.filter((item) => item.status === callbackStatusFilter.value)
-})
-
-const failedCallbackCount = computed(() => callbackList.value.filter((item) => item.status === 'failed').length)
 
 const isCallbackAlertSnoozed = computed(() => {
   const taskId = currentCallbackTask.value?.id
@@ -1036,13 +1060,29 @@ const handleViewExecutions = async (row) => {
   executionDrawerVisible.value = true
 }
 
-const handleViewCallbacks = async (row) => {
+const loadCallbacks = async () => {
+  if (!currentCallbackTask.value) return
+
   const [listRes, healthRes] = await Promise.all([
-    api.get(`/test-tasks/${row.id}/callbacks`, { params: { limit: 50, _t: Date.now() } }),
-    api.get(`/test-tasks/${row.id}/callbacks/health`, { params: { _t: Date.now() } })
+    api.get(`/test-tasks/${currentCallbackTask.value.id}/callbacks`, {
+      params: {
+        page: callbackPagination.page,
+        pageSize: callbackPagination.pageSize,
+        status: callbackQuery.status || undefined,
+        batchNo: callbackQuery.batchNo || undefined,
+        from: callbackTimeRange.value?.[0] ? new Date(callbackTimeRange.value[0]).toISOString() : undefined,
+        to: callbackTimeRange.value?.[1] ? new Date(callbackTimeRange.value[1]).toISOString() : undefined,
+        _t: Date.now()
+      }
+    }),
+    api.get(`/test-tasks/${currentCallbackTask.value.id}/callbacks/health`, { params: { _t: Date.now() } })
   ])
 
-  callbackList.value = Array.isArray(listRes.data) ? listRes.data : []
+  callbackList.value = Array.isArray(listRes.data?.list) ? listRes.data.list : []
+  callbackPagination.total = Number(listRes.data?.total || 0)
+  callbackPagination.page = Number(listRes.data?.page || callbackPagination.page)
+  callbackPagination.pageSize = Number(listRes.data?.pageSize || callbackPagination.pageSize)
+
   callbackHealth.value = {
     threshold: Number(healthRes.data?.threshold || 3),
     consecutiveFailed: Number(healthRes.data?.consecutiveFailed || 0),
@@ -1050,13 +1090,22 @@ const handleViewCallbacks = async (row) => {
     latestStatus: healthRes.data?.latestStatus || null,
     latestAt: healthRes.data?.latestAt || null
   }
-  const prevRisk = getLastRiskState(row.id)
+
+  const prevRisk = getLastRiskState(currentCallbackTask.value.id)
   callbackRecoveredNotice.value = Boolean(prevRisk && !callbackHealth.value.risk)
-  setLastRiskState(row.id, callbackHealth.value.risk)
-  callbackStatusFilter.value = ''
+  setLastRiskState(currentCallbackTask.value.id, callbackHealth.value.risk)
+}
+
+const handleViewCallbacks = async (row) => {
   currentCallbackTask.value = row
+  callbackQuery.status = ''
+  callbackQuery.batchNo = ''
+  callbackTimeRange.value = []
+  callbackPagination.page = 1
+  callbackPagination.pageSize = 20
   callbackDrawerTitle.value = `回调记录 - ${row.name}`
   callbackDrawerVisible.value = true
+  await loadCallbacks()
 }
 
 const handleRetryCallback = async (callback) => {
@@ -1065,7 +1114,7 @@ const handleRetryCallback = async (callback) => {
   try {
     await api.post(`/test-tasks/${currentCallbackTask.value.id}/callbacks/${callback.id}/retry`)
     ElMessage.success('回调重试已触发')
-    await handleViewCallbacks(currentCallbackTask.value)
+    await loadCallbacks()
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '回调重试失败')
   }
@@ -1080,10 +1129,34 @@ const handleRetryFailedCallbacks = async () => {
     })
     const data = res.data || {}
     ElMessage.success(`批量重试完成：成功 ${data.success || 0}，失败 ${data.failed || 0}`)
-    await handleViewCallbacks(currentCallbackTask.value)
+    await loadCallbacks()
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '批量重试失败')
   }
+}
+
+const handleCallbackQueryChange = async () => {
+  callbackPagination.page = 1
+  await loadCallbacks()
+}
+
+const handleCallbackQueryReset = async () => {
+  callbackQuery.status = ''
+  callbackQuery.batchNo = ''
+  callbackTimeRange.value = []
+  callbackPagination.page = 1
+  await loadCallbacks()
+}
+
+const handleCallbackPageChange = async (page) => {
+  callbackPagination.page = page
+  await loadCallbacks()
+}
+
+const handleCallbackSizeChange = async (size) => {
+  callbackPagination.pageSize = size
+  callbackPagination.page = 1
+  await loadCallbacks()
 }
 
 const handleSnoozeCallbackAlert = () => {
@@ -1094,7 +1167,7 @@ const handleSnoozeCallbackAlert = () => {
 }
 
 const handleExportCallbacksCsv = () => {
-  const list = filteredCallbackList.value
+  const list = callbackList.value
   if (!list.length) {
     ElMessage.warning('暂无可导出的回调记录')
     return
