@@ -93,6 +93,12 @@ export class TestTaskController {
     return this.executionService.findCallbacks(id, limit ? Number(limit) : 20);
   }
 
+  @Get(':id/callbacks/health')
+  @ApiOperation({ description: '获取任务回调健康状态' })
+  getCallbackHealth(@Param('id') id: string) {
+    return this.executionService.getCallbackHealth(id);
+  }
+
   @Post(':id/callbacks/:callbackId/retry')
   @Roles(UserRole.ADMIN, UserRole.TESTER)
   @ApiOperation({ description: '重试单条任务回调' })

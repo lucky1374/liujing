@@ -306,6 +306,15 @@
     </el-dialog>
 
     <el-drawer v-model="callbackDrawerVisible" :title="callbackDrawerTitle" size="50%">
+      <el-alert
+        v-if="callbackHealth.risk"
+        :title="`回调连续失败 ${callbackHealth.consecutiveFailed} 次（阈值 ${callbackHealth.threshold}）`"
+        type="error"
+        description="建议先检查回调地址可用性和签名验签逻辑，再执行批量重试。"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 10px"
+      />
       <div class="callback-actions-row">
         <el-select v-model="callbackStatusFilter" size="small" style="width: 150px">
           <el-option label="全部状态" value="" />
@@ -396,6 +405,13 @@ const executionList = ref([])
 const callbackList = ref([])
 const currentCallbackTask = ref(null)
 const callbackStatusFilter = ref('')
+const callbackHealth = ref({
+  threshold: 3,
+  consecutiveFailed: 0,
+  risk: false,
+  latestStatus: null,
+  latestAt: null
+})
 const dialogVisible = ref(false)
 const executionDrawerVisible = ref(false)
 const callbackDrawerVisible = ref(false)
@@ -994,8 +1010,19 @@ const handleViewExecutions = async (row) => {
 }
 
 const handleViewCallbacks = async (row) => {
-  const res = await api.get(`/test-tasks/${row.id}/callbacks`, { params: { limit: 50, _t: Date.now() } })
-  callbackList.value = Array.isArray(res.data) ? res.data : []
+  const [listRes, healthRes] = await Promise.all([
+    api.get(`/test-tasks/${row.id}/callbacks`, { params: { limit: 50, _t: Date.now() } }),
+    api.get(`/test-tasks/${row.id}/callbacks/health`, { params: { _t: Date.now() } })
+  ])
+
+  callbackList.value = Array.isArray(listRes.data) ? listRes.data : []
+  callbackHealth.value = {
+    threshold: Number(healthRes.data?.threshold || 3),
+    consecutiveFailed: Number(healthRes.data?.consecutiveFailed || 0),
+    risk: Boolean(healthRes.data?.risk),
+    latestStatus: healthRes.data?.latestStatus || null,
+    latestAt: healthRes.data?.latestAt || null
+  }
   callbackStatusFilter.value = ''
   currentCallbackTask.value = row
   callbackDrawerTitle.value = `回调记录 - ${row.name}`

@@ -304,6 +304,40 @@ export class TestExecutionService {
     });
   }
 
+  async getCallbackHealth(taskId: string): Promise<{
+    taskId: string;
+    threshold: number;
+    consecutiveFailed: number;
+    risk: boolean;
+    latestStatus: string | null;
+    latestAt: Date | null;
+  }> {
+    const threshold = Math.max(1, this.configService.get<number>('taskCallback.alertConsecutiveFailed') ?? 3);
+    const callbacks = await this.callbackRepository.find({
+      where: { taskId },
+      order: { createdAt: 'DESC' },
+      take: 50,
+    });
+
+    let consecutiveFailed = 0;
+    for (const item of callbacks) {
+      if (item.status === TaskCallbackStatus.FAILED) {
+        consecutiveFailed += 1;
+      } else {
+        break;
+      }
+    }
+
+    return {
+      taskId,
+      threshold,
+      consecutiveFailed,
+      risk: consecutiveFailed >= threshold,
+      latestStatus: callbacks[0]?.status || null,
+      latestAt: callbacks[0]?.createdAt || null,
+    };
+  }
+
   async retryCallback(taskId: string, callbackId: string): Promise<{ success: boolean; attempts: number; responseStatus?: number; errorMessage?: string }> {
     const callback = await this.callbackRepository.findOne({ where: { id: callbackId, taskId } });
     if (!callback) {

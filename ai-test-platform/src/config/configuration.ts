@@ -42,5 +42,6 @@ export default () => ({
     retryCount: parseInt(process.env.TASK_CALLBACK_RETRY_COUNT || '2', 10),
     retryDelayMs: parseInt(process.env.TASK_CALLBACK_RETRY_DELAY_MS || '1000', 10),
     secret: process.env.TASK_CALLBACK_SECRET || '',
+    alertConsecutiveFailed: parseInt(process.env.TASK_CALLBACK_ALERT_CONSECUTIVE_FAILED || '3', 10),
   },
 });
