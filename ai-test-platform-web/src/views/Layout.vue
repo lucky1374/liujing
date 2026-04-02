@@ -61,6 +61,32 @@
           </el-select>
         </div>
         <div class="header-right">
+          <el-popover placement="bottom-end" trigger="click" width="420">
+            <template #reference>
+              <el-badge :value="callbackAlert.totalRisky" :hidden="!callbackAlert.totalRisky" :max="99" class="callback-alert-badge">
+                <el-button text>
+                  <el-icon><Bell /></el-icon>
+                  回调告警
+                </el-button>
+              </el-badge>
+            </template>
+
+            <div class="callback-alert-panel">
+              <div class="callback-alert-header">
+                <span>连续失败告警（阈值 {{ callbackAlert.threshold }}）</span>
+                <el-button size="small" text @click="loadCallbackAlert(false)">刷新</el-button>
+              </div>
+              <div v-if="!callbackAlert.riskyTasks.length" class="callback-alert-empty">暂无风险任务</div>
+              <div v-else class="callback-alert-list">
+                <div v-for="item in callbackAlert.riskyTasks" :key="item.taskId" class="callback-alert-item">
+                  <div class="callback-alert-title">{{ item.taskName }}</div>
+                  <div class="callback-alert-meta">连续失败 {{ item.consecutiveFailed }} 次</div>
+                  <el-button size="small" text type="primary" @click="goToTask(item)">查看任务</el-button>
+                </div>
+              </div>
+            </div>
+          </el-popover>
+
           <el-dropdown @command="handleCommand">
             <span class="user-info">
               <el-icon><User /></el-icon>
@@ -82,7 +108,7 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { onBeforeUnmount, onMounted, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../store/user'
 import { useProjectStore } from '../store/project'
@@ -92,14 +118,47 @@ const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const projectStore = useProjectStore()
+let callbackAlertTimer = null
+
+const callbackAlert = reactive({
+  threshold: 3,
+  totalRisky: 0,
+  riskyTasks: []
+})
 
 const loadProjects = async () => {
   const res = await api.get('/projects', { params: { page: 1, pageSize: 100 } })
   projectStore.setProjects(res.data.list || [])
 }
 
+const loadCallbackAlert = async (silent = true) => {
+  try {
+    const res = await api.get('/test-tasks/observability/callback-alerts', {
+      params: {
+        projectId: projectStore.selectedProjectId || undefined,
+        limit: 10,
+        _t: Date.now()
+      }
+    })
+    callbackAlert.threshold = Number(res.data?.threshold || 3)
+    callbackAlert.totalRisky = Number(res.data?.totalRisky || 0)
+    callbackAlert.riskyTasks = Array.isArray(res.data?.riskyTasks) ? res.data.riskyTasks : []
+  } catch {
+    if (!silent) {
+      callbackAlert.threshold = 3
+      callbackAlert.totalRisky = 0
+      callbackAlert.riskyTasks = []
+    }
+  }
+}
+
 const handleProjectChange = (projectId) => {
   projectStore.setSelectedProjectId(projectId)
+  loadCallbackAlert()
+}
+
+const goToTask = (item) => {
+  router.push({ path: '/test-tasks', query: { taskId: item.taskId, projectId: item.projectId || '' } })
 }
 
 const handleCommand = (command) => {
@@ -109,7 +168,20 @@ const handleCommand = (command) => {
   }
 }
 
-onMounted(loadProjects)
+onMounted(async () => {
+  await loadProjects()
+  await loadCallbackAlert()
+  callbackAlertTimer = window.setInterval(() => {
+    loadCallbackAlert(true)
+  }, 30000)
+})
+
+onBeforeUnmount(() => {
+  if (callbackAlertTimer) {
+    window.clearInterval(callbackAlertTimer)
+    callbackAlertTimer = null
+  }
+})
 </script>
 
 <style scoped>
@@ -155,6 +227,58 @@ onMounted(loadProjects)
 
 .project-switcher {
   width: 240px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.callback-alert-badge {
+  margin-right: 4px;
+}
+
+.callback-alert-panel {
+  max-height: 360px;
+  overflow: auto;
+}
+
+.callback-alert-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.callback-alert-empty {
+  color: #909399;
+  font-size: 13px;
+}
+
+.callback-alert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.callback-alert-item {
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.callback-alert-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 4px;
+}
+
+.callback-alert-meta {
+  font-size: 12px;
+  color: #f56c6c;
+  margin-bottom: 2px;
 }
 
 .user-info {

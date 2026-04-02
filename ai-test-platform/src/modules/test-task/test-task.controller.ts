@@ -58,6 +58,13 @@ export class TestTaskController {
     return this.executionService.getTaskIdsByFailureReason(reason, hours ? Number(hours) : 24);
   }
 
+  @Get('observability/callback-alerts')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '获取回调告警概览' })
+  getCallbackAlerts(@Query('projectId') projectId?: string, @Query('limit') limit?: string) {
+    return this.executionService.getCallbackAlertOverview(projectId, limit ? Number(limit) : 10);
+  }
+
   @Get(':id')
   @ApiOperation({ description: '获取任务详情' })
   findOne(@Param('id') id: string) {

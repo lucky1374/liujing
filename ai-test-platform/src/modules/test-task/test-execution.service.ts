@@ -375,6 +375,106 @@ export class TestExecutionService {
     };
   }
 
+  async getCallbackAlertOverview(projectId?: string, limit: number = 10): Promise<{
+    threshold: number;
+    totalRisky: number;
+    riskyTasks: Array<{
+      taskId: string;
+      taskName: string;
+      projectId: string;
+      triggerUrl: string;
+      consecutiveFailed: number;
+      latestStatus: string | null;
+      latestAt: Date | null;
+    }>;
+  }> {
+    const threshold = Math.max(1, this.configService.get<number>('taskCallback.alertConsecutiveFailed') ?? 3);
+    const safeLimit = Math.min(Math.max(limit, 1), 50);
+
+    const tasks = await this.taskRepository.find({
+      where: {
+        ...(projectId ? { projectId } : {}),
+        triggerType: 'webhook',
+      },
+      select: ['id', 'name', 'projectId', 'triggerUrl'],
+      take: 200,
+      order: { updatedAt: 'DESC' },
+    });
+
+    if (!tasks.length) {
+      return {
+        threshold,
+        totalRisky: 0,
+        riskyTasks: [],
+      };
+    }
+
+    const taskIds = tasks.map((item) => item.id);
+    const callbacks = await this.callbackRepository.find({
+      where: { taskId: In(taskIds) },
+      order: { createdAt: 'DESC' },
+      take: Math.min(taskIds.length * 20, 4000),
+    });
+
+    const taskStateMap = new Map<string, {
+      latestStatus: string | null;
+      latestAt: Date | null;
+      consecutiveFailed: number;
+      stopped: boolean;
+    }>();
+
+    for (const cb of callbacks) {
+      const current = taskStateMap.get(cb.taskId) || {
+        latestStatus: null,
+        latestAt: null,
+        consecutiveFailed: 0,
+        stopped: false,
+      };
+
+      if (!current.latestAt) {
+        current.latestAt = cb.createdAt || null;
+        current.latestStatus = cb.status;
+      }
+
+      if (!current.stopped) {
+        if (cb.status === TaskCallbackStatus.FAILED) {
+          current.consecutiveFailed += 1;
+        } else {
+          current.stopped = true;
+        }
+      }
+
+      taskStateMap.set(cb.taskId, current);
+    }
+
+    const riskyTasks = tasks
+      .map((task) => {
+        const state = taskStateMap.get(task.id);
+        return {
+          taskId: task.id,
+          taskName: task.name,
+          projectId: task.projectId,
+          triggerUrl: task.triggerUrl,
+          consecutiveFailed: state?.consecutiveFailed || 0,
+          latestStatus: state?.latestStatus || null,
+          latestAt: state?.latestAt || null,
+        };
+      })
+      .filter((item) => item.consecutiveFailed >= threshold)
+      .sort((a, b) => {
+        if (b.consecutiveFailed !== a.consecutiveFailed) {
+          return b.consecutiveFailed - a.consecutiveFailed;
+        }
+        return new Date(b.latestAt || 0).getTime() - new Date(a.latestAt || 0).getTime();
+      });
+
+    return {
+      threshold,
+      totalRisky: riskyTasks.length,
+      riskyTasks: riskyTasks.slice(0, safeLimit),
+    };
+  }
+
   async retryCallback(taskId: string, callbackId: string): Promise<{ success: boolean; attempts: number; responseStatus?: number; errorMessage?: string }> {
     const callback = await this.callbackRepository.findOne({ where: { id: callbackId, taskId } });
     if (!callback) {
