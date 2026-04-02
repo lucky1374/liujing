@@ -118,6 +118,7 @@
                   style="width: 280px"
                   @change="handleNotificationFilterChange"
                 />
+                <el-button size="small" @click="resetNotificationFilters">重置筛选</el-button>
                 <el-button size="small" @click="handleExportNotificationsCsv" :disabled="!notificationCenter.list.length">导出CSV</el-button>
               </div>
               <div v-if="!notificationCenter.list.length" class="callback-alert-empty">暂无通知</div>
@@ -137,12 +138,14 @@
               <el-pagination
                 v-if="notificationCenter.total > notificationCenter.pageSize"
                 class="notify-pagination"
-                layout="prev, pager, next"
+                layout="total, prev, pager, next, sizes"
                 :total="notificationCenter.total"
                 :current-page="notificationCenter.page"
                 :page-size="notificationCenter.pageSize"
+                :page-sizes="[10, 20, 50, 100]"
                 small
                 @current-change="handleNotificationPageChange"
+                @size-change="handleNotificationPageSizeChange"
               />
             </div>
           </el-popover>
@@ -310,6 +313,20 @@ const toCsvCell = (value) => {
 
 const handleNotificationPageChange = async (page) => {
   notificationCenter.page = page
+  await loadNotifications(false)
+}
+
+const handleNotificationPageSizeChange = async (pageSize) => {
+  notificationCenter.pageSize = pageSize
+  notificationCenter.page = 1
+  await loadNotifications(false)
+}
+
+const resetNotificationFilters = async () => {
+  notificationCenter.unreadOnly = false
+  notificationCenter.type = ''
+  notificationCenter.timeRange = []
+  notificationCenter.page = 1
   await loadNotifications(false)
 }
 
