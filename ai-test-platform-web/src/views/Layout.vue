@@ -14,42 +14,60 @@
           <el-icon><DataAnalysis /></el-icon>
           <span>仪表盘</span>
         </el-menu-item>
-        <el-menu-item index="/projects">
-          <el-icon><FolderOpened /></el-icon>
-          <span>项目管理</span>
-        </el-menu-item>
-        <el-menu-item index="/test-cases">
-          <el-icon><Document /></el-icon>
-          <span>测试用例</span>
-        </el-menu-item>
-        <el-menu-item index="/test-scripts">
-          <el-icon><Cpu /></el-icon>
-          <span>测试脚本</span>
-        </el-menu-item>
-        <el-menu-item index="/test-tasks">
-          <el-icon><Operation /></el-icon>
-          <span>测试任务</span>
-        </el-menu-item>
-        <el-menu-item index="/test-data">
-          <el-icon><Folder /></el-icon>
-          <span>测试数据</span>
-        </el-menu-item>
-        <el-menu-item index="/defects">
-          <el-icon><Warning /></el-icon>
-          <span>缺陷管理</span>
-        </el-menu-item>
-        <el-menu-item index="/test-reports">
-          <el-icon><DataLine /></el-icon>
-          <span>测试报告</span>
-        </el-menu-item>
-        <el-menu-item index="/environments">
-          <el-icon><Setting /></el-icon>
-          <span>环境管理</span>
-        </el-menu-item>
-        <el-menu-item index="/troubleshooting-guide">
-          <el-icon><Document /></el-icon>
-          <span>联调故障速查</span>
-        </el-menu-item>
+
+        <el-sub-menu index="interface-automation">
+          <template #title>
+            <el-icon><Connection /></el-icon>
+            <span>接口自动化</span>
+          </template>
+          <el-menu-item index="/projects">
+            <el-icon><FolderOpened /></el-icon>
+            <span>项目管理</span>
+          </el-menu-item>
+          <el-menu-item index="/test-cases">
+            <el-icon><Document /></el-icon>
+            <span>测试用例</span>
+          </el-menu-item>
+          <el-menu-item index="/test-scripts">
+            <el-icon><Cpu /></el-icon>
+            <span>测试脚本</span>
+          </el-menu-item>
+          <el-menu-item index="/test-tasks">
+            <el-icon><Operation /></el-icon>
+            <span>测试任务</span>
+          </el-menu-item>
+          <el-menu-item index="/test-data">
+            <el-icon><Folder /></el-icon>
+            <span>测试数据</span>
+          </el-menu-item>
+          <el-menu-item index="/defects">
+            <el-icon><Warning /></el-icon>
+            <span>缺陷管理</span>
+          </el-menu-item>
+          <el-menu-item index="/test-reports">
+            <el-icon><DataLine /></el-icon>
+            <span>测试报告</span>
+          </el-menu-item>
+          <el-menu-item index="/environments">
+            <el-icon><Setting /></el-icon>
+            <span>环境管理</span>
+          </el-menu-item>
+          <el-menu-item index="/troubleshooting-guide">
+            <el-icon><Document /></el-icon>
+            <span>联调故障速查</span>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="ui-automation">
+          <template #title>
+            <el-icon><Monitor /></el-icon>
+            <span>UI 自动化</span>
+          </template>
+          <el-menu-item index="/ai-agent-lab">
+            <el-icon><MagicStick /></el-icon>
+            <span>UI 自动化实验室</span>
+          </el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
     <el-container>
@@ -158,7 +176,15 @@ const handleProjectChange = (projectId) => {
 }
 
 const goToTask = (item) => {
-  router.push({ path: '/test-tasks', query: { taskId: item.taskId, projectId: item.projectId || '' } })
+  router.push({
+    path: '/test-tasks',
+    query: {
+      taskId: item.taskId,
+      projectId: item.projectId || '',
+      openCallbacks: '1',
+      callbackStatus: 'failed'
+    }
+  })
 }
 
 const handleCommand = (command) => {
@@ -295,5 +321,9 @@ onBeforeUnmount(() => {
 .el-menu-item {
   height: 50px;
   line-height: 50px;
+}
+
+:deep(.el-sub-menu__title) {
+  font-weight: 600;
 }
 </style>

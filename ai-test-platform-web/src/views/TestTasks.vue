@@ -453,6 +453,7 @@ const callbackPagination = reactive({
 })
 const callbackSnoozeMinutes = ref(30)
 const callbackRecoveredNotice = ref(false)
+const callbackRouteHandledKey = ref('')
 const callbackHealth = ref({
   threshold: 3,
   consecutiveFailed: 0,
@@ -801,7 +802,12 @@ const resetForm = () => {
     priority: 'medium',
     scheduledTime: '',
     triggerType: '',
-    triggerUrl: ''
+    triggerUrl: '',
+    uiConfig: {
+      targetPath: '',
+      prompt: '',
+      notes: ''
+    }
   })
 }
 
@@ -828,7 +834,12 @@ const handleEdit = async (row) => {
     priority: row.priority || 'medium',
     scheduledTime: row.scheduledTime || '',
     triggerType: row.triggerType || '',
-    triggerUrl: row.triggerUrl || ''
+    triggerUrl: row.triggerUrl || '',
+    uiConfig: {
+      targetPath: row.uiConfig?.targetPath || '',
+      prompt: row.uiConfig?.prompt || '',
+      notes: row.uiConfig?.notes || ''
+    }
   })
   await loadProjectResources(form.projectId)
   dialogTitle.value = '编辑任务'
@@ -844,6 +855,18 @@ const handleSave = async () => {
     return
   }
 
+  if (form.type === 'ui_test') {
+    if (!form.uiConfig.targetPath) {
+      ElMessage.error('请填写 UI 自动化任务的目标页面路径')
+      return
+    }
+
+    if (!form.uiConfig.prompt) {
+      ElMessage.error('请填写 UI 自动化任务的执行提示词')
+      return
+    }
+  }
+
   const payload = {
     projectId: form.projectId,
     name: form.name,
@@ -852,11 +875,18 @@ const handleSave = async () => {
     executeType: form.executeType,
     executeEnvironments: form.executeEnvironments,
     environmentId: form.environmentId || undefined,
-    scriptIds: form.scriptIds,
+    scriptIds: form.type === 'ui_test' ? [] : form.scriptIds,
     priority: form.priority,
     scheduledTime: form.executeType === 'scheduled' ? form.scheduledTime : undefined,
     triggerType: form.triggerType || undefined,
-    triggerUrl: form.triggerType === 'webhook' ? (form.triggerUrl || undefined) : undefined
+    triggerUrl: form.triggerType === 'webhook' ? (form.triggerUrl || undefined) : undefined,
+    uiConfig: form.type === 'ui_test'
+      ? {
+          targetPath: form.uiConfig.targetPath,
+          prompt: form.uiConfig.prompt,
+          notes: form.uiConfig.notes || ''
+        }
+      : undefined
   }
 
   saveLoading.value = true
@@ -879,6 +909,25 @@ const handleSave = async () => {
 }
 
 const handleExecute = async (row) => {
+  if (row.type === 'ui_test') {
+    const targetPath = String(row.uiConfig?.targetPath || '').trim()
+    if (!targetPath) {
+      ElMessage.error('该 UI 自动化任务缺少目标页面路径')
+      return
+    }
+
+    projectStore.setSelectedProjectId(row.projectId || '')
+    await router.push({
+      path: targetPath,
+      query: {
+        aiAgent: '1',
+        uiTaskId: row.id
+      }
+    })
+    ElMessage.success('已进入 UI 自动化执行页面，请在右下角 UI Agent 面板中启动任务')
+    return
+  }
+
   const payload = {}
   if (row.environmentId) payload.environmentId = row.environmentId
   else if (row.executeEnvironments?.length) payload.environment = row.executeEnvironments[0]
@@ -1096,16 +1145,46 @@ const loadCallbacks = async () => {
   setLastRiskState(currentCallbackTask.value.id, callbackHealth.value.risk)
 }
 
-const handleViewCallbacks = async (row) => {
+const handleViewCallbacks = async (row, options = {}) => {
   currentCallbackTask.value = row
-  callbackQuery.status = ''
-  callbackQuery.batchNo = ''
-  callbackTimeRange.value = []
-  callbackPagination.page = 1
-  callbackPagination.pageSize = 20
+  if (!options.preserveQuery) {
+    callbackQuery.status = ''
+    callbackQuery.batchNo = ''
+    callbackTimeRange.value = []
+    callbackPagination.page = 1
+    callbackPagination.pageSize = 20
+  }
   callbackDrawerTitle.value = `回调记录 - ${row.name}`
   callbackDrawerVisible.value = true
   await loadCallbacks()
+}
+
+const maybeOpenCallbacksFromRoute = async (query) => {
+  const openCallbacks = normalizeQueryValue(query.openCallbacks)
+  const taskId = normalizeQueryValue(query.taskId)
+  if (openCallbacks !== '1' || !taskId) return
+
+  const key = `${taskId}|${normalizeQueryValue(query.callbackStatus)}|${normalizeQueryValue(query.callbackBatchNo)}|${normalizeQueryValue(query.callbackFrom)}|${normalizeQueryValue(query.callbackTo)}`
+  if (callbackRouteHandledKey.value === key) return
+
+  callbackQuery.status = normalizeQueryValue(query.callbackStatus)
+  callbackQuery.batchNo = normalizeQueryValue(query.callbackBatchNo)
+  const from = normalizeQueryValue(query.callbackFrom)
+  const to = normalizeQueryValue(query.callbackTo)
+  callbackTimeRange.value = from && to ? [new Date(from), new Date(to)] : []
+
+  let row = tableData.value.find((item) => item.id === taskId)
+  if (!row) {
+    try {
+      const res = await api.get(`/test-tasks/${taskId}`)
+      row = res.data
+    } catch {
+      return
+    }
+  }
+
+  callbackRouteHandledKey.value = key
+  await handleViewCallbacks(row, { preserveQuery: true })
 }
 
 const handleRetryCallback = async (callback) => {
@@ -1310,6 +1389,7 @@ onMounted(async () => {
     await loadProjectResources(projectStore.selectedProjectId)
   }
   await loadData()
+  await maybeOpenCallbacksFromRoute(route.query)
   await loadRunnerOverview()
   await loadObservabilityOverview()
 
@@ -1342,6 +1422,7 @@ watch(() => route.query, async (query) => {
   queryForm.taskId = normalizeQueryValue(query.taskId)
   queryForm.status = normalizeQueryValue(query.status)
   await loadData()
+  await maybeOpenCallbacksFromRoute(query)
 })
 
 const formatJson = (value) => {
