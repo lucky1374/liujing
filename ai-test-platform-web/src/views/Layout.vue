@@ -103,6 +103,11 @@
               </div>
               <div class="callback-actions-inline">
                 <el-switch v-model="notificationCenter.unreadOnly" active-text="仅未读" @change="handleNotificationFilterChange" />
+                <el-select v-model="notificationCenter.type" size="small" style="width: 130px" @change="handleNotificationFilterChange">
+                  <el-option label="全部类型" value="" />
+                  <el-option label="风险告警" value="callback_risk" />
+                  <el-option label="恢复通知" value="callback_recovered" />
+                </el-select>
               </div>
               <div v-if="!notificationCenter.list.length" class="callback-alert-empty">暂无通知</div>
               <div v-else class="callback-alert-list">
@@ -118,6 +123,16 @@
                   </div>
                 </div>
               </div>
+              <el-pagination
+                v-if="notificationCenter.total > notificationCenter.pageSize"
+                class="notify-pagination"
+                layout="prev, pager, next"
+                :total="notificationCenter.total"
+                :current-page="notificationCenter.page"
+                :page-size="notificationCenter.pageSize"
+                small
+                @current-change="handleNotificationPageChange"
+              />
             </div>
           </el-popover>
 
@@ -147,6 +162,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '../store/user'
 import { useProjectStore } from '../store/project'
 import api from '../api'
+import { ElMessageBox } from 'element-plus'
 
 const route = useRoute()
 const router = useRouter()
@@ -159,6 +175,7 @@ const notificationCenter = reactive({
   total: 0,
   unread: 0,
   unreadOnly: false,
+  type: '',
   page: 1,
   pageSize: 20
 })
@@ -176,6 +193,7 @@ const loadNotifications = async (silent = true) => {
         page: notificationCenter.page,
         pageSize: notificationCenter.pageSize,
         unreadOnly: notificationCenter.unreadOnly,
+        type: notificationCenter.type || undefined,
         _t: Date.now()
       }
     })
@@ -199,6 +217,15 @@ const handleProjectChange = (projectId) => {
 
 const goToNotification = async (item) => {
   if (!item.isRead) {
+    try {
+      await ElMessageBox.confirm('打开任务详情前，将把该通知标记为已读，是否继续？', '提示', {
+        type: 'warning',
+        confirmButtonText: '继续',
+        cancelButtonText: '取消'
+      })
+    } catch {
+      return
+    }
     await markNotificationRead(item, true)
   }
 
@@ -237,6 +264,11 @@ const markAllNotificationsRead = async () => {
 
 const handleNotificationFilterChange = async () => {
   notificationCenter.page = 1
+  await loadNotifications(false)
+}
+
+const handleNotificationPageChange = async (page) => {
+  notificationCenter.page = page
   await loadNotifications(false)
 }
 
@@ -337,6 +369,8 @@ onBeforeUnmount(() => {
 
 .callback-actions-inline {
   margin-bottom: 8px;
+  display: flex;
+  gap: 8px;
 }
 
 .callback-alert-list {
@@ -367,6 +401,11 @@ onBeforeUnmount(() => {
 .callback-alert-actions {
   display: flex;
   gap: 8px;
+}
+
+.notify-pagination {
+  margin-top: 8px;
+  justify-content: center;
 }
 
 .user-info {

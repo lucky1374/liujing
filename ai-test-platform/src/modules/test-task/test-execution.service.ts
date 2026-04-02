@@ -374,6 +374,7 @@ export class TestExecutionService {
     pageSize?: number;
     projectId?: string;
     unreadOnly?: boolean;
+    type?: string;
   }): Promise<{ list: AlertNotification[]; total: number; unread: number; page: number; pageSize: number }> {
     const page = Math.max(1, Number(query?.page || 1));
     const pageSize = Math.min(Math.max(1, Number(query?.pageSize || 20)), 100);
@@ -384,6 +385,9 @@ export class TestExecutionService {
     }
     if (query?.unreadOnly) {
       qb.andWhere('n.isRead = :isRead', { isRead: false });
+    }
+    if (query?.type && [AlertNotificationType.CALLBACK_RISK, AlertNotificationType.CALLBACK_RECOVERED].includes(query.type as AlertNotificationType)) {
+      qb.andWhere('n.type = :type', { type: query.type });
     }
 
     const [list, total] = await qb

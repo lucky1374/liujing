@@ -73,12 +73,14 @@ export class TestTaskController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('unreadOnly') unreadOnly?: string,
+    @Query('type') type?: string,
   ) {
     return this.executionService.findAlertNotifications({
       projectId,
       page: page ? Number(page) : 1,
       pageSize: pageSize ? Number(pageSize) : 20,
       unreadOnly: String(unreadOnly).toLowerCase() === 'true',
+      type,
     });
   }
 
