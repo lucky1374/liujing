@@ -307,7 +307,7 @@
 
     <el-drawer v-model="callbackDrawerVisible" :title="callbackDrawerTitle" size="50%">
       <el-alert
-        v-if="callbackHealth.risk"
+        v-if="callbackHealth.risk && !isCallbackAlertSnoozed"
         :title="`回调连续失败 ${callbackHealth.consecutiveFailed} 次（阈值 ${callbackHealth.threshold}）`"
         type="error"
         description="建议先检查回调地址可用性和签名验签逻辑，再执行批量重试。"
@@ -315,12 +315,27 @@
         show-icon
         style="margin-bottom: 10px"
       />
+      <el-alert
+        v-if="callbackRecoveredNotice"
+        title="回调健康已恢复"
+        type="success"
+        description="连续失败告警已解除，最近回调状态恢复正常。"
+        show-icon
+        style="margin-bottom: 10px"
+        @close="callbackRecoveredNotice = false"
+      />
       <div class="callback-actions-row">
         <el-select v-model="callbackStatusFilter" size="small" style="width: 150px">
           <el-option label="全部状态" value="" />
           <el-option label="成功" value="success" />
           <el-option label="失败" value="failed" />
         </el-select>
+        <el-select v-model="callbackSnoozeMinutes" size="small" style="width: 130px" :disabled="!callbackHealth.risk">
+          <el-option label="静音30分钟" :value="30" />
+          <el-option label="静音2小时" :value="120" />
+          <el-option label="静音24小时" :value="1440" />
+        </el-select>
+        <el-button size="small" :disabled="!callbackHealth.risk" @click="handleSnoozeCallbackAlert">告警静音</el-button>
         <el-button size="small" type="warning" @click="handleRetryFailedCallbacks" :disabled="!failedCallbackCount">重试失败回调</el-button>
         <el-button size="small" @click="handleExportCallbacksCsv" :disabled="!callbackList.length">导出CSV</el-button>
       </div>
@@ -405,6 +420,8 @@ const executionList = ref([])
 const callbackList = ref([])
 const currentCallbackTask = ref(null)
 const callbackStatusFilter = ref('')
+const callbackSnoozeMinutes = ref(30)
+const callbackRecoveredNotice = ref(false)
 const callbackHealth = ref({
   threshold: 3,
   consecutiveFailed: 0,
@@ -412,6 +429,9 @@ const callbackHealth = ref({
   latestStatus: null,
   latestAt: null
 })
+
+const CALLBACK_ALERT_SNOOZE_KEY = 'ai-test-platform-callback-alert-snooze'
+const CALLBACK_ALERT_RISK_KEY = 'ai-test-platform-callback-risk-state'
 const dialogVisible = ref(false)
 const executionDrawerVisible = ref(false)
 const callbackDrawerVisible = ref(false)
@@ -643,6 +663,13 @@ const filteredCallbackList = computed(() => {
 })
 
 const failedCallbackCount = computed(() => callbackList.value.filter((item) => item.status === 'failed').length)
+
+const isCallbackAlertSnoozed = computed(() => {
+  const taskId = currentCallbackTask.value?.id
+  if (!taskId) return false
+  const until = getSnoozeUntil(taskId)
+  return until > Date.now()
+})
 
 const globalFailureReasonOptions = computed(() => {
   const fromOverview = (observability.value.topFailureReasons || []).map((item) => item.reason).filter(Boolean)
@@ -1023,6 +1050,9 @@ const handleViewCallbacks = async (row) => {
     latestStatus: healthRes.data?.latestStatus || null,
     latestAt: healthRes.data?.latestAt || null
   }
+  const prevRisk = getLastRiskState(row.id)
+  callbackRecoveredNotice.value = Boolean(prevRisk && !callbackHealth.value.risk)
+  setLastRiskState(row.id, callbackHealth.value.risk)
   callbackStatusFilter.value = ''
   currentCallbackTask.value = row
   callbackDrawerTitle.value = `回调记录 - ${row.name}`
@@ -1054,6 +1084,13 @@ const handleRetryFailedCallbacks = async () => {
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '批量重试失败')
   }
+}
+
+const handleSnoozeCallbackAlert = () => {
+  if (!currentCallbackTask.value?.id || !callbackHealth.value.risk) return
+  const minutes = Number(callbackSnoozeMinutes.value || 30)
+  setSnoozeUntil(currentCallbackTask.value.id, Date.now() + minutes * 60 * 1000)
+  ElMessage.success(`回调告警已静音 ${minutes} 分钟`)
 }
 
 const handleExportCallbacksCsv = () => {
@@ -1090,6 +1127,43 @@ const toCsvCell = (value) => {
   const text = value === null || value === undefined ? '' : String(value)
   const escaped = text.replace(/"/g, '""')
   return `"${escaped}"`
+}
+
+const readLocalJsonMap = (key) => {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+const writeLocalJsonMap = (key, value) => {
+  localStorage.setItem(key, JSON.stringify(value || {}))
+}
+
+const getSnoozeUntil = (taskId) => {
+  const map = readLocalJsonMap(CALLBACK_ALERT_SNOOZE_KEY)
+  return Number(map[taskId] || 0)
+}
+
+const setSnoozeUntil = (taskId, until) => {
+  const map = readLocalJsonMap(CALLBACK_ALERT_SNOOZE_KEY)
+  map[taskId] = Number(until || 0)
+  writeLocalJsonMap(CALLBACK_ALERT_SNOOZE_KEY, map)
+}
+
+const getLastRiskState = (taskId) => {
+  const map = readLocalJsonMap(CALLBACK_ALERT_RISK_KEY)
+  return Boolean(map[taskId])
+}
+
+const setLastRiskState = (taskId, risk) => {
+  const map = readLocalJsonMap(CALLBACK_ALERT_RISK_KEY)
+  map[taskId] = Boolean(risk)
+  writeLocalJsonMap(CALLBACK_ALERT_RISK_KEY, map)
 }
 
 const handleViewBatchExecutions = async (callback) => {
