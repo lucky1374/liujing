@@ -29,6 +29,18 @@ export class Project {
   @Column({ type: 'enum', enum: ProjectStatus, default: ProjectStatus.ACTIVE })
   status: ProjectStatus;
 
+  @Column({ type: 'json', nullable: true })
+  releaseGateSettings: {
+    minPassRate?: number;
+    minAiAdoptionRate?: number;
+    minAiSampleSize?: number;
+    rectificationOwnerDefault?: string;
+    rectificationPriorityDefault?: 'P0' | 'P1' | 'P2';
+    rectificationTagsDefault?: string[];
+    updatedAt?: string;
+    updatedBy?: string;
+  } | null;
+
   @CreateDateColumn()
   createdAt: Date;
 
