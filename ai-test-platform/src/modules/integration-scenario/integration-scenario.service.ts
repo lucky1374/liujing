@@ -7,6 +7,7 @@ import {
   CreateScenarioFromTemplateDto,
   CreateIntegrationScenarioDto,
   ExecuteIntegrationScenarioDto,
+  QueryGovernanceExecutionDto,
   ExecuteGovernanceRulesDto,
   ImportScenarioTemplatesDto,
   NotifyTemplateLifecycleDto,
@@ -816,6 +817,88 @@ export class IntegrationScenarioService {
       matchedCount: actions.length,
       appliedCount,
       actions,
+    };
+  }
+
+  async getGovernanceExecutions(query: QueryGovernanceExecutionDto): Promise<{
+    list: Array<{
+      id: string;
+      createdAt: Date;
+      templateKey: string;
+      templateName: string;
+      businessLine: string;
+      operatorId: string;
+      ruleId: string;
+      comment: string;
+    }>;
+    total: number;
+    page: number;
+    pageSize: number;
+    summary: {
+      totalInRange: number;
+      byRule: Array<{ ruleId: string; count: number }>;
+    };
+  }> {
+    const page = Math.max(1, Number(query.page || 1));
+    const pageSize = Math.min(Math.max(1, Number(query.pageSize || 20)), 100);
+    const days = Number.isFinite(Number(query.days)) ? Math.min(Math.max(1, Number(query.days || 30)), 180) : 30;
+    const businessLine = String(query.businessLine || '').trim();
+    const since = new Date(Date.now() - days * 24 * 3600 * 1000);
+
+    const logs = await this.templateAuditRepository.find({
+      where: {
+        action: IntegrationScenarioTemplateAuditAction.GOVERNANCE_AUTO_TRANSITION,
+        createdAt: MoreThanOrEqual(since),
+      },
+      order: { createdAt: 'DESC' },
+      take: 2000,
+    });
+
+    const templateKeys = Array.from(new Set(logs.map((item) => item.templateKey).filter(Boolean)));
+    const templates = templateKeys.length
+      ? await this.templateRepository.find({ where: { key: In(templateKeys) }, select: ['key', 'name', 'category'] })
+      : [];
+    const templateMap = new Map(templates.map((item) => [item.key, item]));
+
+    const parsed = logs
+      .map((item) => {
+        const template = templateMap.get(item.templateKey);
+        const rawComment = String(item.comment || '').trim();
+        const ruleMatch = rawComment.match(/^\[([^\]]+)\]\s*/);
+        const ruleId = ruleMatch ? String(ruleMatch[1] || '') : 'unknown';
+        const comment = ruleMatch ? rawComment.replace(ruleMatch[0], '') : rawComment;
+        return {
+          id: item.id,
+          createdAt: item.createdAt,
+          templateKey: item.templateKey,
+          templateName: template?.name || item.templateKey,
+          businessLine: String(template?.category || 'general'),
+          operatorId: item.operatorId || '',
+          ruleId,
+          comment,
+        };
+      })
+      .filter((item) => (businessLine ? item.businessLine === businessLine : true));
+
+    const ruleCounter = new Map<string, number>();
+    for (const item of parsed) {
+      ruleCounter.set(item.ruleId, (ruleCounter.get(item.ruleId) || 0) + 1);
+    }
+    const byRule = Array.from(ruleCounter.entries())
+      .map(([ruleId, count]) => ({ ruleId, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const total = parsed.length;
+    const list = parsed.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize);
+    return {
+      list,
+      total,
+      page,
+      pageSize,
+      summary: {
+        totalInRange: total,
+        byRule,
+      },
     };
   }
 

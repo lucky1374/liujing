@@ -570,3 +570,18 @@ export class ExecuteGovernanceRulesDto {
   @IsBoolean()
   dryRun?: boolean;
 }
+
+export class QueryGovernanceExecutionDto extends PaginationDto {
+  @ApiPropertyOptional({ description: '按业务线筛选（模板category）' })
+  @IsOptional()
+  @IsString()
+  businessLine?: string;
+
+  @ApiPropertyOptional({ description: '最近天数', default: 30 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(180)
+  days?: number;
+}

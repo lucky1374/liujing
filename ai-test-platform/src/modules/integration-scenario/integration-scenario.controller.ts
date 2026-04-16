@@ -4,6 +4,7 @@ import {
   CreateScenarioFromTemplateDto,
   CreateIntegrationScenarioDto,
   ExecuteIntegrationScenarioDto,
+  QueryGovernanceExecutionDto,
   ExecuteGovernanceRulesDto,
   ImportScenarioTemplatesDto,
   QueryTemplateAuditDiffDto,
@@ -179,6 +180,13 @@ export class IntegrationScenarioController {
   @ApiOperation({ description: '执行模板治理自动流转规则（支持dry-run）' })
   executeGovernanceRules(@Body() dto: ExecuteGovernanceRulesDto, @Request() req: any) {
     return this.scenarioService.executeGovernanceRules(dto, req.user.userId);
+  }
+
+  @Get('templates/governance-rules/executions')
+  @Roles(UserRole.ADMIN, UserRole.TESTER)
+  @ApiOperation({ description: '查询自动流转执行记录（审计视图）' })
+  getGovernanceExecutions(@Query() query: QueryGovernanceExecutionDto) {
+    return this.scenarioService.getGovernanceExecutions(query);
   }
 
   @Post('templates/lifecycle-reminders/notify')

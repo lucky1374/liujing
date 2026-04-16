@@ -801,6 +801,30 @@
         <el-button type="primary" :loading="governanceRuleSaving" @click="handleSaveGovernanceRule">保存规则</el-button>
       </template>
       <pre v-if="governanceExecuteResult" class="json-block" style="margin-top: 8px">{{ formatJson(governanceExecuteResult) }}</pre>
+
+      <el-divider />
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; flex-wrap: wrap">
+        <div style="font-size: 13px; color: #606266">自动流转命中记录</div>
+        <div style="display: flex; align-items: center; gap: 8px">
+          <el-select v-model="governanceHistoryQuery.days" size="small" style="width: 120px" @change="loadGovernanceExecutions">
+            <el-option :value="7" label="近7天" />
+            <el-option :value="30" label="近30天" />
+            <el-option :value="90" label="近90天" />
+          </el-select>
+          <el-button size="small" @click="loadGovernanceExecutions">刷新</el-button>
+        </div>
+      </div>
+      <div style="font-size: 12px; color: #909399; margin-bottom: 8px">
+        区间命中 {{ governanceHistorySummary.totalInRange || 0 }} 次；
+        规则分布：{{ governanceRuleCounterText }}
+      </div>
+      <el-table :data="governanceExecutionList" border size="small" v-loading="governanceExecutionLoading" max-height="280">
+        <el-table-column prop="createdAt" label="时间" width="170" />
+        <el-table-column prop="templateName" label="模板" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="businessLine" label="业务线" width="110" />
+        <el-table-column prop="ruleId" label="规则" width="220" show-overflow-tooltip />
+        <el-table-column prop="comment" label="原因" min-width="260" show-overflow-tooltip />
+      </el-table>
     </el-dialog>
 
     <el-dialog v-model="lifecycleReminderVisible" title="生命周期提醒" width="760px">
@@ -882,6 +906,10 @@ const governanceRuleSaving = ref(false)
 const governanceExecuteLoading = ref(false)
 const governanceRules = ref([])
 const governanceExecuteResult = ref(null)
+const governanceExecutionLoading = ref(false)
+const governanceExecutionList = ref([])
+const governanceHistorySummary = reactive({ totalInRange: 0, byRule: [] })
+const governanceHistoryQuery = reactive({ days: 30, page: 1, pageSize: 20 })
 const lifecycleReminderVisible = ref(false)
 const lifecycleReminderLoading = ref(false)
 const lifecycleReminders = ref([])
@@ -1105,6 +1133,12 @@ const projectNameMap = computed(() => {
 
 const selectedTemplate = computed(() => {
   return templates.value.find((item) => item.key === templateForm.templateKey) || null
+})
+
+const governanceRuleCounterText = computed(() => {
+  const rows = Array.isArray(governanceHistorySummary.byRule) ? governanceHistorySummary.byRule : []
+  if (!rows.length) return '暂无'
+  return rows.map((item) => `${item.ruleId}:${item.count}`).join('；')
 })
 
 const templateStatusLabel = {
@@ -1430,7 +1464,33 @@ const handleOpenGovernanceRuleDialog = async () => {
     handleSelectGovernanceRule(first)
   }
   governanceExecuteResult.value = null
+  await loadGovernanceExecutions()
   governanceRuleVisible.value = true
+}
+
+const loadGovernanceExecutions = async () => {
+  governanceExecutionLoading.value = true
+  try {
+    const res = await api.get('/integration-scenarios/templates/governance-rules/executions', {
+      params: {
+        businessLine: String(governanceRuleForm.businessLine || '').trim() || undefined,
+        days: Number(governanceHistoryQuery.days || 30),
+        page: Number(governanceHistoryQuery.page || 1),
+        pageSize: Number(governanceHistoryQuery.pageSize || 20),
+      },
+    })
+    governanceExecutionList.value = Array.isArray(res.data?.list) ? res.data.list : []
+    Object.assign(governanceHistorySummary, {
+      totalInRange: Number(res.data?.summary?.totalInRange || 0),
+      byRule: Array.isArray(res.data?.summary?.byRule) ? res.data.summary.byRule : [],
+    })
+  } catch (error) {
+    governanceExecutionList.value = []
+    Object.assign(governanceHistorySummary, { totalInRange: 0, byRule: [] })
+    ElMessage.error(error.response?.data?.message || '自动流转记录加载失败')
+  } finally {
+    governanceExecutionLoading.value = false
+  }
 }
 
 const handleSaveGovernanceRule = async () => {
@@ -1474,6 +1534,7 @@ const handleExecuteGovernanceRules = async (dryRun = true) => {
     if (!dryRun) {
       await loadTemplates()
     }
+    await loadGovernanceExecutions()
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '自动流转执行失败')
   } finally {
